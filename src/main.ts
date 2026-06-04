@@ -10,8 +10,8 @@ async function bootstrap() {
   // Enable CORS for frontend connection
   app.enableCors();
 
-  // Prefix all routes with /api
-  app.setGlobalPrefix('api');
+  // Prefix all routes with /api, excluding root and health check endpoint
+  app.setGlobalPrefix('api', { exclude: ['/', 'health'] });
 
   // Configure validation globally
   app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));

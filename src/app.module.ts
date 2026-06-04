@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AppController } from './app.controller';
 import { SupabaseModule } from './supabase/supabase.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
@@ -25,5 +26,6 @@ import { FinanceModule } from './admin/finance/finance.module';
     AdminModule,
     FinanceModule,
   ],
+  controllers: [AppController],
 })
 export class AppModule {}
