@@ -162,6 +162,42 @@ export class CoinTransactionsService {
     });
   }
 
+  async listByUserId(
+    userId: string,
+    limit = 20,
+  ): Promise<CoinTransactionRecord[]> {
+    if (this.supabase.isConfigured) {
+      try {
+        const { data, error } = await this.supabase
+          .getClient()
+          .from('coin_transactions')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false })
+          .limit(limit);
+
+        if (error) {
+          console.warn('CoinTransactionsService.listByUserId:', error.message);
+          return [];
+        }
+
+        return (data as Record<string, unknown>[]).map((row) =>
+          this.rowToRecord(row),
+        );
+      } catch (e) {
+        console.warn(
+          'CoinTransactionsService.listByUserId exception:',
+          (e as Error).message,
+        );
+        return [];
+      }
+    }
+
+    return this.memTransactions
+      .filter((t) => t.userId === userId)
+      .slice(0, limit);
+  }
+
   private rowToRecord(row: Record<string, unknown>): CoinTransactionRecord {
     return {
       id: row.id as string,

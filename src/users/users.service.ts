@@ -2,9 +2,11 @@ import {
   Injectable,
   NotFoundException,
   InternalServerErrorException,
+  BadRequestException,
 } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { CompleteOnboardingDto } from './dto/complete-onboarding.dto';
 
 // ─── Domain model ───────────────────────────────────────────────────────────
 
@@ -18,18 +20,63 @@ export interface User {
   status: 'active' | 'blocked';
   registeredAt: string;
   firebase_uid?: string;
+  fullName?: string;
+  dateOfBirth?: string;
   gender?: string;
+  avatarUrl?: string;
   language?: string;
   onboardingCompleted?: boolean;
   fcm_token?: string;
 }
 
+const USER_SELECT =
+  'id, name, phone, email, coins, total_calls, status, created_at, firebase_uid, full_name, date_of_birth, gender, avatar_url, language, onboarding_completed, fcm_token';
+
 // ─── Row → domain mapping ────────────────────────────────────────────────────
 
+export interface PublicUserProfile {
+  id: string;
+  fullName: string;
+  dateOfBirth?: string;
+  gender?: string;
+  avatarUrl?: string;
+  onboardingCompleted: boolean;
+  name: string;
+  phone: string;
+  email: string;
+  coins: number;
+  status: string;
+  language?: string;
+}
+
+export function toPublicProfile(user: User): PublicUserProfile {
+  const fullName = user.fullName || user.name || '';
+  return {
+    id: user.id,
+    fullName,
+    dateOfBirth: user.dateOfBirth,
+    gender: user.gender,
+    avatarUrl: user.avatarUrl,
+    onboardingCompleted: Boolean(user.onboardingCompleted),
+    name: fullName,
+    phone: user.phone,
+    email: user.email,
+    coins: user.coins,
+    status: user.status,
+    language: user.language,
+  };
+}
+
 function rowToUser(row: Record<string, unknown>): User {
+  const fullName =
+    (row.full_name as string) || (row.name as string) || undefined;
+  const dateOfBirth = row.date_of_birth
+    ? String(row.date_of_birth).slice(0, 10)
+    : undefined;
+
   return {
     id: row.id as string,
-    name: (row.name as string) || '',
+    name: fullName || (row.name as string) || '',
     phone: (row.phone as string) || '',
     email: (row.email as string) || '',
     coins: Number(row.coins ?? 0),
@@ -37,7 +84,10 @@ function rowToUser(row: Record<string, unknown>): User {
     status: ((row.status as string) === 'blocked' ? 'blocked' : 'active'),
     registeredAt: (row.created_at as string) || new Date().toISOString(),
     firebase_uid: (row.firebase_uid as string) || undefined,
+    fullName,
+    dateOfBirth,
     gender: (row.gender as string) || undefined,
+    avatarUrl: (row.avatar_url as string) || undefined,
     language: (row.language as string) || undefined,
     onboardingCompleted: Boolean(row.onboarding_completed ?? false),
     fcm_token: (row.fcm_token as string) || undefined,
@@ -71,9 +121,7 @@ export class UsersService {
   async findAll(status?: 'active' | 'blocked'): Promise<User[]> {
     if (this.supabase.isConfigured) {
       try {
-        let q = this.supabase.getClient().from('users').select(
-          'id, name, phone, email, coins, total_calls, status, created_at, firebase_uid, gender, language, onboarding_completed, fcm_token',
-        );
+        let q = this.supabase.getClient().from('users').select(USER_SELECT);
         if (status) q = q.eq('status', status);
         const { data, error } = await q;
         if (!error && data) return (data as Record<string, unknown>[]).map(rowToUser);
@@ -91,9 +139,7 @@ export class UsersService {
         const { data, error } = await this.supabase
           .getClient()
           .from('users')
-          .select(
-            'id, name, phone, email, coins, total_calls, status, created_at, firebase_uid, gender, language, onboarding_completed, fcm_token',
-          )
+          .select(USER_SELECT)
           .eq('id', id)
           .single();
         if (!error && data) return rowToUser(data as Record<string, unknown>);
@@ -117,7 +163,7 @@ export class UsersService {
           .getClient()
           .from('users')
           .select(
-            'id, name, phone, email, coins, total_calls, status, created_at, firebase_uid, gender, language, onboarding_completed, fcm_token',
+            USER_SELECT,
           )
           .eq('phone', phone)
           .maybeSingle();
@@ -137,7 +183,7 @@ export class UsersService {
           .getClient()
           .from('users')
           .select(
-            'id, name, phone, email, coins, total_calls, status, created_at, firebase_uid, gender, language, onboarding_completed, fcm_token',
+            USER_SELECT,
           )
           .eq('firebase_uid', firebaseUid)
           .maybeSingle();
@@ -166,7 +212,7 @@ export class UsersService {
           })
           .eq('id', id)
           .select(
-            'id, name, phone, email, coins, total_calls, status, created_at, firebase_uid, gender, language, onboarding_completed, fcm_token',
+            USER_SELECT,
           )
           .single();
 
@@ -206,7 +252,7 @@ export class UsersService {
             status: 'active',
           })
           .select(
-            'id, name, phone, email, coins, total_calls, status, created_at, firebase_uid, gender, language, onboarding_completed, fcm_token',
+            USER_SELECT,
           )
           .single();
 
@@ -322,14 +368,100 @@ export class UsersService {
     return { message: 'FCM token saved' };
   }
 
-  async updateProfile(userId: string, dto: UpdateProfileDto) {
+  async completeOnboarding(userId: string, dto: CompleteOnboardingDto) {
+    const existing = await this.findOne(userId);
+
+    if (existing.onboardingCompleted) {
+      throw new BadRequestException('Onboarding already completed');
+    }
+
+    if (existing.gender) {
+      throw new BadRequestException('Gender has already been set');
+    }
+
+    if (existing.dateOfBirth) {
+      throw new BadRequestException('Date of birth has already been set');
+    }
+
+    const trimmedName = dto.fullName.trim();
     const payload: Record<string, string | boolean> = {
+      full_name: trimmedName,
+      name: trimmedName,
+      date_of_birth: dto.dateOfBirth,
+      gender: dto.gender,
+      avatar_url: dto.avatarUrl,
+      onboarding_completed: true,
       updated_at: new Date().toISOString(),
     };
-    if (dto.gender !== undefined) payload.gender = dto.gender;
-    if (dto.language !== undefined) payload.language = dto.language;
+
+    if (this.supabase.isConfigured) {
+      try {
+        const { data, error } = await this.supabase
+          .getClient()
+          .from('users')
+          .update(payload)
+          .eq('id', userId)
+          .select(USER_SELECT)
+          .single();
+
+        if (!error && data) {
+          const user = rowToUser(data as Record<string, unknown>);
+          this.syncMemUser(userId, user);
+          return { message: 'Onboarding completed', user: toPublicProfile(user) };
+        }
+        if (error) {
+          console.warn('UsersService.completeOnboarding Supabase error:', error.message);
+          throw new BadRequestException(error.message);
+        }
+      } catch (e) {
+        if (e instanceof BadRequestException) throw e;
+        console.warn('UsersService.completeOnboarding exception:', (e as Error).message);
+      }
+    }
+
+    const mem = await this.findOne(userId);
+    mem.fullName = trimmedName;
+    mem.name = trimmedName;
+    mem.dateOfBirth = dto.dateOfBirth;
+    mem.gender = dto.gender;
+    mem.avatarUrl = dto.avatarUrl;
+    mem.onboardingCompleted = true;
+    return { message: 'Onboarding completed', user: toPublicProfile(mem) };
+  }
+
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
+    if (dto.gender !== undefined) {
+      throw new BadRequestException('Gender cannot be changed');
+    }
+
+    if (dto.dateOfBirth !== undefined) {
+      throw new BadRequestException('Date of birth cannot be changed');
+    }
+
     if (dto.onboardingCompleted !== undefined) {
-      payload.onboarding_completed = dto.onboardingCompleted;
+      throw new BadRequestException(
+        'Onboarding status cannot be changed via profile update',
+      );
+    }
+
+    const payload: Record<string, string> = {
+      updated_at: new Date().toISOString(),
+    };
+
+    if (dto.fullName !== undefined) {
+      const trimmed = dto.fullName.trim();
+      payload.full_name = trimmed;
+      payload.name = trimmed;
+    }
+    if (dto.avatarUrl !== undefined) {
+      payload.avatar_url = dto.avatarUrl;
+    }
+    if (dto.language !== undefined) {
+      payload.language = dto.language;
+    }
+
+    if (dto.fullName === undefined && dto.avatarUrl === undefined && dto.language === undefined) {
+      throw new BadRequestException('No profile fields to update');
     }
 
     if (this.supabase.isConfigured) {
@@ -339,33 +471,35 @@ export class UsersService {
           .from('users')
           .update(payload)
           .eq('id', userId)
-          .select(
-            'id, name, phone, email, coins, total_calls, status, created_at, firebase_uid, gender, language, onboarding_completed, fcm_token',
-          )
+          .select(USER_SELECT)
           .single();
 
         if (!error && data) {
           const user = rowToUser(data as Record<string, unknown>);
-          const mem = this.memUsers.find((u) => u.id === userId);
-          if (mem) {
-            if (dto.gender !== undefined) mem.gender = dto.gender;
-            if (dto.language !== undefined) mem.language = dto.language;
-            if (dto.onboardingCompleted !== undefined) mem.onboardingCompleted = dto.onboardingCompleted;
-          }
-          return { message: 'Profile updated', user };
+          this.syncMemUser(userId, user);
+          return { message: 'Profile updated', user: toPublicProfile(user) };
         }
         if (error) console.warn('UsersService.updateProfile Supabase error:', error.message);
       } catch (e) {
+        if (e instanceof BadRequestException) throw e;
         console.warn('UsersService.updateProfile exception:', (e as Error).message);
       }
     }
 
-    // In-memory fallback
     const mem = await this.findOne(userId);
-    if (dto.gender !== undefined) mem.gender = dto.gender;
+    if (dto.fullName !== undefined) {
+      const trimmed = dto.fullName.trim();
+      mem.fullName = trimmed;
+      mem.name = trimmed;
+    }
+    if (dto.avatarUrl !== undefined) mem.avatarUrl = dto.avatarUrl;
     if (dto.language !== undefined) mem.language = dto.language;
-    if (dto.onboardingCompleted !== undefined) mem.onboardingCompleted = dto.onboardingCompleted;
-    return { message: 'Profile updated', user: mem };
+    return { message: 'Profile updated', user: toPublicProfile(mem) };
+  }
+
+  private syncMemUser(userId: string, user: User): void {
+    const mem = this.memUsers.find((u) => u.id === userId);
+    if (mem) Object.assign(mem, user);
   }
 
   getMemUsers(): User[] {

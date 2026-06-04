@@ -14,6 +14,7 @@ import {
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery, ApiBearerAuth } from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { CompleteOnboardingDto } from './dto/complete-onboarding.dto';
 import { SaveFcmTokenDto } from './dto/save-fcm-token.dto';
 import { JwtAuthGuard } from '../auth/auth.guard';
 import { AdminGuard } from '../auth/admin.guard';
@@ -34,10 +35,24 @@ export class UsersController {
     return this.usersService.saveFcmToken(req.user.id, dto.fcmToken);
   }
 
+  @Post('complete-onboarding')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Complete caller onboarding (one-time)' })
+  @ApiResponse({ status: 200, description: 'Onboarding completed.' })
+  @ApiResponse({ status: 400, description: 'Validation or business rule error.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  completeOnboarding(
+    @Request() req: { user: { id: string } },
+    @Body() dto: CompleteOnboardingDto,
+  ) {
+    return this.usersService.completeOnboarding(req.user.id, dto);
+  }
+
   @Patch('profile')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Update current user profile (gender, language)' })
+  @ApiOperation({ summary: 'Update profile (full name and avatar only)' })
   @ApiResponse({ status: 200, description: 'Profile updated successfully.' })
+  @ApiResponse({ status: 400, description: 'Immutable field or validation error.' })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   updateProfile(@Request() req, @Body() dto: UpdateProfileDto) {
     return this.usersService.updateProfile(req.user.id, dto);

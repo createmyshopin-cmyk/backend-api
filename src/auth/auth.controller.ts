@@ -1,6 +1,7 @@
 import { Controller, Post, Body, HttpCode, HttpStatus, Get, UseGuards, Request } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
+import { User, UsersService, toPublicProfile } from '../users/users.service';
 import { LoginDto, RegisterDto } from './dto/auth.dto';
 import { FirebaseLoginDto } from './dto/firebase-login.dto';
 import { JwtAuthGuard } from './auth.guard';
@@ -8,7 +9,10 @@ import { JwtAuthGuard } from './auth.guard';
 @ApiTags('Authentication')
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly usersService: UsersService,
+  ) {}
 
   @Post('login')
   @HttpCode(HttpStatus.OK)
@@ -46,7 +50,10 @@ export class AuthController {
   @ApiOperation({ summary: 'Get Current Logged-in User Profile' })
   @ApiResponse({ status: 200, description: 'User profile retrieved successfully.' })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
-  getProfile(@Request() req) {
-    return req.user;
+  getProfile(@Request() req: { user: User & { role?: string } }) {
+    if (req.user.role) {
+      return req.user;
+    }
+    return toPublicProfile(req.user);
   }
 }
