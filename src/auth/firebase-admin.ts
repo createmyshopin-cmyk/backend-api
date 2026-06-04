@@ -13,10 +13,16 @@ const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
 const projectId = process.env.FIREBASE_PROJECT_ID;
 
 if (privateKey && clientEmail && projectId) {
+  const formattedPrivateKey = privateKey
+    .trim()
+    .replace(/^["']/, '')
+    .replace(/["']$/, '')
+    .replace(/\\n/g, '\n');
+
   credentialValue = admin.credential.cert({
     projectId,
     clientEmail,
-    privateKey: privateKey.replace(/\\n/g, '\n'),
+    privateKey: formattedPrivateKey,
   });
 } else {
   const serviceAccountPath = path.resolve(__dirname, '../../config/firebase/service-account.json');
