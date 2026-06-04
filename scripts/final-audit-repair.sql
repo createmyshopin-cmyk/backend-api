@@ -1,0 +1,1 @@
+-- No repairs needed. DB is consistent.
