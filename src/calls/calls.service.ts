@@ -249,8 +249,26 @@ export class CallsService {
     return this.memCalls.filter((c) => ACTIVE_CALL_STATUSES.includes(c.status));
   }
 
+  /** Auto-close ring requests that were never answered (prevents repeat incoming UI). */
+  private async expireStaleCallRequests(): Promise<void> {
+    if (!this.supabase.isConfigured) return;
+    const cutoff = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+    try {
+      await this.supabase
+        .getClient()
+        .from('call_requests')
+        .update({ status: 'missed' })
+        .eq('status', 'requested')
+        .lt('created_at', cutoff);
+    } catch (e) {
+      console.warn('expireStaleCallRequests:', (e as Error).message);
+    }
+  }
+
   /** Pending incoming requests for the authenticated creator. */
   async getPendingRequestsForCreator(creatorUserId: string) {
+    await this.expireStaleCallRequests();
+
     if (this.supabase.isConfigured) {
       try {
         const { data, error } = await this.supabase
@@ -874,6 +892,13 @@ export class CallsService {
             ended_reason: dto.endedReason ?? null,
           })
           .eq('id', callId);
+
+        await this.supabase
+          .getClient()
+          .from('call_requests')
+          .update({ status: 'accepted' })
+          .eq('call_id', callId)
+          .eq('status', 'requested');
 
         let newBalance: number | undefined;
         try {
