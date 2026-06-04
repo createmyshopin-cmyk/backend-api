@@ -13,17 +13,44 @@ const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
 const projectId = process.env.FIREBASE_PROJECT_ID;
 
 if (privateKey && clientEmail && projectId) {
-  const formattedPrivateKey = privateKey
+  let formattedPrivateKey = privateKey
     .trim()
     .replace(/^["']/, '')
     .replace(/["']$/, '')
     .replace(/\\n/g, '\n');
 
-  credentialValue = admin.credential.cert({
-    projectId,
-    clientEmail,
-    privateKey: formattedPrivateKey,
-  });
+  // Auto-repair common copy-paste typo where \nMII became \nnMII or nMII
+  if (formattedPrivateKey.includes('-----BEGIN PRIVATE KEY-----')) {
+    const lines = formattedPrivateKey.split('\n').map(line => line.trim());
+    const headerIndex = lines.findIndex(line => line.includes('BEGIN PRIVATE KEY'));
+    if (headerIndex !== -1 && headerIndex + 1 < lines.length) {
+      const firstBodyLine = lines[headerIndex + 1];
+      if (firstBodyLine.startsWith('nMII')) {
+        lines[headerIndex + 1] = firstBodyLine.substring(1); // remove the typo 'n'
+      }
+    }
+    formattedPrivateKey = lines.join('\n');
+  }
+
+  try {
+    credentialValue = admin.credential.cert({
+      projectId,
+      clientEmail,
+      privateKey: formattedPrivateKey,
+    });
+  } catch (error) {
+    console.error('=== FIREBASE KEY DIAGNOSTICS ===');
+    console.error(`Key length: ${formattedPrivateKey.length}`);
+    console.error(`Starts with header: ${formattedPrivateKey.startsWith('-----BEGIN PRIVATE KEY-----')}`);
+    console.error(`Ends with footer: ${formattedPrivateKey.endsWith('-----END PRIVATE KEY-----')}`);
+    const lines = formattedPrivateKey.split('\n');
+    console.error(`Number of lines: ${lines.length}`);
+    if (lines.length > 1) {
+      console.error(`Line 1 prefix (first 10 chars): "${lines[1].substring(0, 10)}"`);
+    }
+    console.error('================================');
+    throw error;
+  }
 } else {
   const serviceAccountPath = path.resolve(__dirname, '../../config/firebase/service-account.json');
   if (fs.existsSync(serviceAccountPath)) {
