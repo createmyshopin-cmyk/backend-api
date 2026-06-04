@@ -52,5 +52,9 @@ export class CreatePackageDto {
   @ApiProperty({ example: 99 })
   @IsNumber()
   price: number;
+
+  @ApiProperty({ example: true, required: false })
+  @IsOptional()
+  enabled?: boolean;
 }
 

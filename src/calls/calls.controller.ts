@@ -43,6 +43,15 @@ export class CallsController {
     return this.callsService.getActive();
   }
 
+  @Get()
+  @UseGuards(AdminGuard)
+  @ApiOperation({ summary: 'Get all historical call sessions (admin)' })
+  @ApiResponse({ status: 200, description: 'List of historical call sessions.' })
+  @ApiResponse({ status: 403, description: 'Admin access required.' })
+  getAdminHistory() {
+    return this.callsService.getHistory();
+  }
+
   @Get('history')
   @ApiOperation({ summary: 'Get call history for the authenticated user' })
   @ApiResponse({ status: 200, description: 'List of completed/missed calls for caller or creator.' })

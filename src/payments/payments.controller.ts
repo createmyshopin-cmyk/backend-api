@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Param, HttpCode, HttpStatus, UseGuards, Request } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, HttpCode, HttpStatus, UseGuards, Request } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { PaymentsService } from './payments.service';
 import { CreatePackageDto, VerifyPaymentDto, CreateOrderDto } from './dto/payment.dto';
@@ -68,6 +68,31 @@ export class PaymentsController {
     @Body('reason') reason?: string,
   ) {
     return this.paymentsService.refundPayment(paymentId, reason);
+  }
+
+  @Patch('packages/:id')
+  @UseGuards(AdminGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Update existing coin package (admin)' })
+  @ApiResponse({ status: 200, description: 'Package updated.' })
+  @ApiResponse({ status: 403, description: 'Admin access required.' })
+  @ApiResponse({ status: 404, description: 'Package not found.' })
+  updatePackage(
+    @Param('id') id: string,
+    @Body() dto: CreatePackageDto,
+  ) {
+    return this.paymentsService.updatePackage(id, dto);
+  }
+
+  @Delete('packages/:id')
+  @UseGuards(AdminGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Delete existing coin package (admin)' })
+  @ApiResponse({ status: 200, description: 'Package deactivated successfully.' })
+  @ApiResponse({ status: 403, description: 'Admin access required.' })
+  @ApiResponse({ status: 404, description: 'Package not found.' })
+  deletePackage(@Param('id') id: string) {
+    return this.paymentsService.deletePackage(id);
   }
 }
 

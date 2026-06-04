@@ -530,6 +530,87 @@ export class PaymentsService {
     };
   }
 
+  async updatePackage(id: string, dto: CreatePackageDto): Promise<CoinPackage> {
+    if (this.supabase.isConfigured) {
+      try {
+        const updateData: any = {
+          name: dto.name,
+          coins: dto.coins,
+          bonus_coins: dto.bonusCoins,
+          price: dto.price,
+        };
+        if (dto.enabled !== undefined) {
+          updateData.is_active = dto.enabled;
+        }
+
+        const { data, error } = await this.supabase
+          .getClient()
+          .from('coin_packages')
+          .update(updateData)
+          .eq('id', id)
+          .select('*')
+          .single();
+
+        if (error) {
+          throw new NotFoundException(`Package ${id} not found or update failed: ${error.message}`);
+        }
+        return {
+          id: data.id,
+          name: data.name,
+          coins: Number(data.coins),
+          bonusCoins: Number(data.bonus_coins ?? 0),
+          price: Number(data.price),
+          enabled: data.is_active,
+        };
+      } catch (e) {
+        if (e instanceof NotFoundException) throw e;
+        console.warn('PaymentsService.updatePackage exception:', (e as Error).message);
+      }
+    }
+
+    const pkg = this.packages.find(p => p.id === id);
+    if (!pkg) {
+      throw new NotFoundException(`Coin package with ID ${id} not found`);
+    }
+    pkg.name = dto.name;
+    pkg.coins = dto.coins;
+    pkg.bonusCoins = dto.bonusCoins;
+    pkg.price = dto.price;
+    if (dto.enabled !== undefined) {
+      pkg.enabled = dto.enabled;
+    }
+    return pkg;
+  }
+
+  async deletePackage(id: string) {
+    if (this.supabase.isConfigured) {
+      try {
+        const { data, error } = await this.supabase
+          .getClient()
+          .from('coin_packages')
+          .update({ is_active: false })
+          .eq('id', id)
+          .select('*')
+          .single();
+
+        if (error) {
+          throw new NotFoundException(`Package ${id} not found or delete failed: ${error.message}`);
+        }
+        return { message: 'Package deactivated successfully', packageId: id };
+      } catch (e) {
+        if (e instanceof NotFoundException) throw e;
+        console.warn('PaymentsService.deletePackage exception:', (e as Error).message);
+      }
+    }
+
+    const index = this.packages.findIndex(p => p.id === id);
+    if (index === -1) {
+      throw new NotFoundException(`Coin package with ID ${id} not found`);
+    }
+    this.packages[index].enabled = false;
+    return { message: 'Package deactivated successfully', packageId: id };
+  }
+
   getMemPayments(): PaymentRecord[] {
     return this.payments;
   }

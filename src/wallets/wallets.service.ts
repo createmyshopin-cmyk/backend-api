@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { UsersService } from '../users/users.service';
 import { CoinTransactionsService } from '../calls/coin-transactions.service';
+import { SupabaseService } from '../supabase/supabase.service';
 import { AdjustCoinsDto } from './dto/wallet.dto';
 
 export interface WalletTransaction {
@@ -18,6 +19,7 @@ export class WalletsService {
   constructor(
     private readonly usersService: UsersService,
     private readonly coinTransactions: CoinTransactionsService,
+    private readonly supabase: SupabaseService,
   ) {}
 
   private transactions: WalletTransaction[] = [
@@ -35,6 +37,36 @@ export class WalletsService {
   }
 
   async getTransactions(userId?: string) {
+    if (this.supabase.isConfigured) {
+      try {
+        let query = this.supabase
+          .getClient()
+          .from('coin_transactions')
+          .select('*, users(name)')
+          .order('created_at', { ascending: false });
+
+        if (userId) {
+          query = query.eq('user_id', userId);
+        }
+
+        const { data, error } = await query;
+        if (!error && data) {
+          return data.map(row => ({
+            id: row.id,
+            userId: row.user_id,
+            userName: row.users ? (row.users as any).name : 'Unknown User',
+            type: row.type,
+            amount: Number(row.amount),
+            balanceAfter: Number(row.balance_after),
+            date: row.created_at,
+          }));
+        }
+        console.warn('WalletsService.getTransactions error:', error?.message);
+      } catch (e) {
+        console.warn('WalletsService.getTransactions exception:', (e as Error).message);
+      }
+    }
+
     if (userId) {
       return this.transactions.filter(t => t.userId === userId);
     }
