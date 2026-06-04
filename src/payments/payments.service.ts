@@ -298,37 +298,9 @@ export class PaymentsService {
   }
 
   async verifyPayment(dto: VerifyPaymentDto) {
-    // ── Legacy / Direct Mock Flow Compatibility ─────────────────────────────────
+    // ── App / mock checkout (paymentId + transactionId, no Razorpay signature) ──
     if (dto.paymentId && dto.transactionId && !dto.razorpaySignature) {
-      const payment = this.payments.find(p => p.id === dto.paymentId);
-      if (!payment) {
-        throw new NotFoundException(`Payment record ${dto.paymentId} not found`);
-      }
-
-      if (payment.status !== 'pending') {
-        throw new BadRequestException('Payment has already been processed');
-      }
-
-      payment.transactionId = dto.transactionId;
-      payment.status = 'success';
-
-      const user = await this.usersService.findOne(payment.userId);
-      const balanceBefore = user.coins;
-      const updatedUser = await this.usersService.updateCoins(payment.userId, payment.coins);
-
-      await this.coinTransactions.recordRecharge({
-        userId: payment.userId,
-        coinsAdded: payment.coins,
-        balanceBefore,
-        balanceAfter: updatedUser.coins,
-        paymentId: payment.id,
-        gateway: payment.gateway,
-      });
-
-      return {
-        message: 'Payment verified and coins credited successfully',
-        payment
-      };
+      return this.completePendingPayment(dto.paymentId, dto.transactionId);
     }
 
     // ── Razorpay Signature Flow ──────────────────────────────────────────────
@@ -438,6 +410,112 @@ export class PaymentsService {
         transactionId: dto.razorpayPaymentId,
         status: 'success',
       },
+    };
+  }
+
+  /** Credits coins for a pending payment row (mobile mock checkout or admin verify). */
+  private async completePendingPayment(paymentId: string, transactionId: string) {
+    if (this.supabase.isConfigured) {
+      try {
+        const { data, error } = await this.supabase
+          .getClient()
+          .from('payments')
+          .select('*')
+          .eq('id', paymentId)
+          .single();
+
+        if (error || !data) {
+          throw new NotFoundException(`Payment record ${paymentId} not found`);
+        }
+
+        if (data.status !== 'pending') {
+          throw new BadRequestException(
+            `Payment has already been processed (status: ${data.status})`,
+          );
+        }
+
+        const userId = data.user_id as string;
+        const coinsAdded = Number(data.coins_added);
+
+        const user = await this.usersService.findOne(userId);
+        const balanceBefore = user.coins;
+        const updatedUser = await this.usersService.updateCoins(userId, coinsAdded);
+
+        const { error: updateErr } = await this.supabase
+          .getClient()
+          .from('payments')
+          .update({ status: 'success' })
+          .eq('id', paymentId);
+
+        if (updateErr) {
+          console.warn('completePendingPayment update error:', updateErr.message);
+        }
+
+        await this.coinTransactions.recordRecharge({
+          userId,
+          coinsAdded,
+          balanceBefore,
+          balanceAfter: updatedUser.coins,
+          paymentId,
+          gateway: (data.gateway as string) || 'Razorpay',
+        });
+
+        return {
+          message: 'Payment verified and coins credited successfully',
+          payment: {
+            id: paymentId,
+            userId,
+            amount: Number(data.amount),
+            coins: coinsAdded,
+            gateway: data.gateway,
+            transactionId,
+            status: 'success',
+          },
+          newBalance: updatedUser.coins,
+        };
+      } catch (e) {
+        if (
+          e instanceof NotFoundException ||
+          e instanceof BadRequestException
+        ) {
+          throw e;
+        }
+        console.warn('completePendingPayment Supabase error:', (e as Error).message);
+      }
+    }
+
+    const payment = this.payments.find((p) => p.id === paymentId);
+    if (!payment) {
+      throw new NotFoundException(`Payment record ${paymentId} not found`);
+    }
+
+    if (payment.status !== 'pending') {
+      throw new BadRequestException('Payment has already been processed');
+    }
+
+    payment.transactionId = transactionId;
+    payment.status = 'success';
+
+    const user = await this.usersService.findOne(payment.userId);
+    const balanceBefore = user.coins;
+    const updatedUser = await this.usersService.updateCoins(
+      payment.userId,
+      payment.coins,
+    );
+
+    await this.coinTransactions.recordRecharge({
+      userId: payment.userId,
+      coinsAdded: payment.coins,
+      balanceBefore,
+      balanceAfter: updatedUser.coins,
+      paymentId: payment.id,
+      gateway: payment.gateway,
+    });
+
+    return {
+      message: 'Payment verified and coins credited successfully',
+      payment,
+      newBalance: updatedUser.coins,
     };
   }
 
