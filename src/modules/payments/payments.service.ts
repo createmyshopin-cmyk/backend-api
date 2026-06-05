@@ -318,8 +318,12 @@ export class PaymentsService {
       this.memPayments.unshift(savedPayment);
     }
 
+    const mockCheckout = !this.razorpayService.isConfigured;
+
     return {
       payment: savedPayment,
+      /** True when Railway has no Razorpay keys — app must use mock verify, not Razorpay SDK */
+      mockCheckout,
       // Return everything Flutter's Razorpay SDK needs for checkout
       razorpayOrder: {
         id:       gatewayOrderId,
