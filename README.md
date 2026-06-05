@@ -82,7 +82,7 @@ Railway is the recommended host for deploying the NestJS API:
    - Add all key-value entries from `.env.example` (ensure `PORT` is set to `5000`).
 4. **Build Config**:
    - Railway will automatically detect the `package.json` file and use the `npm run build` and `npm start` commands.
-   - Set the `NPM_CONFIG_PRODUCTION` variable to `false` if build dependencies are required at compile time.
+   - The repo includes `.npmrc` with `include=dev` so Nest build tools install on Railway without the deprecated `NPM_CONFIG_PRODUCTION` flag.
 5. **Generate Domain**:
    - In the **Settings** tab under **Networking**, click **Generate Domain** or map a custom DNS domain to expose the server.
 

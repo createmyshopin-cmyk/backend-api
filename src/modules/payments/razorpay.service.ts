@@ -1,10 +1,10 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import * as crypto from 'crypto';
-import Razorpay = require('razorpay');
+import { createRazorpayClient, RazorpayInstance } from './razorpay-client';
 
 @Injectable()
 export class RazorpayService {
-  private razorpay: Razorpay | null = null;
+  private razorpay: RazorpayInstance | null = null;
   private keyId: string;
   private keySecret: string;
 
@@ -13,7 +13,10 @@ export class RazorpayService {
     this.keySecret = process.env.RAZORPAY_KEY_SECRET || '';
 
     if (this.keyId && this.keySecret && !this.keyId.startsWith('rzp_test_mock')) {
-      this.razorpay = new Razorpay({ key_id: this.keyId, key_secret: this.keySecret });
+      this.razorpay = createRazorpayClient({
+        key_id: this.keyId,
+        key_secret: this.keySecret,
+      });
     }
   }
 
