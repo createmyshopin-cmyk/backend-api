@@ -1,6 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import * as crypto from 'crypto';
-import Razorpay from 'razorpay';
+import Razorpay = require('razorpay');
 
 @Injectable()
 export class RazorpayService {
