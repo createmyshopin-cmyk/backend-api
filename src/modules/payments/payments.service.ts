@@ -326,11 +326,11 @@ export class PaymentsService {
       mockCheckout,
       // Return everything Flutter's Razorpay SDK needs for checkout
       razorpayOrder: {
+        ...gatewayOrderData,
         id:       gatewayOrderId,
         amount:   amountInPaise,
         currency: pkg.currency,
         keyId:    mockCheckout ? 'rzp_test_mockKeyId' : this.razorpayService.getKeyId(),
-        ...gatewayOrderData,
       },
     };
   }
