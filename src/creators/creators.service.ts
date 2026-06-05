@@ -5,6 +5,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
+import admin from '../auth/firebase-admin';
 
 /** Online when last heartbeat was within this window (seconds). */
 export const CREATOR_ONLINE_THRESHOLD_SECONDS = 60;
@@ -141,6 +142,7 @@ export class CreatorsService {
       lastSeenLabel: this.formatLastSeenLabel(creator.lastSeenAt, creator.isOnline),
       profileImage: creator.profileImage,
       isNew: creator.isNew ?? this.isRecentlyJoined(creator.createdAt),
+      status: creator.status,
     };
   }
 
@@ -326,12 +328,105 @@ export class CreatorsService {
     return creator;
   }
 
+  async apply(userId: string, dto: { name: string; bio: string; languages: string[]; profileImage: string }) {
+    const existing = this.creators.find(c => c.id === userId);
+    if (existing) {
+      throw new BadRequestException('You have already applied or are a creator');
+    }
+
+    const newCreator: Creator = {
+      id: userId,
+      name: dto.name || 'Listener',
+      phone: '',
+      email: '',
+      bio: dto.bio || '',
+      languages: dto.languages || ['English'],
+      gender: 'Female',
+      experience: '1 Year',
+      status: 'pending',
+      rating: 5.0,
+      completedCalls: 0,
+      revenueGenerated: 0,
+      ratePerMinute: 10,
+      isOnline: false,
+      profileImage: dto.profileImage || 'https://i.pravatar.cc/150?u=' + userId,
+      createdAt: new Date().toISOString(),
+    };
+
+    this.creators.push(newCreator);
+
+    if (this.supabase.isConfigured) {
+      try {
+        const client = this.supabase.getClient();
+        await client.from('creator_profiles').insert({
+          user_id: userId,
+          bio: dto.bio,
+          languages: dto.languages ? dto.languages.join(',') : 'Malayalam',
+          experience: '1 Year',
+          price_per_minute: 10,
+          rating: 5.0,
+          online_status: false,
+        });
+      } catch (e) {
+        console.warn('Failed to insert creator_profile into Supabase:', (e as Error).message);
+      }
+    }
+
+    return {
+      success: true,
+      message: 'Application submitted successfully',
+      creator: this.mapToDto(newCreator),
+    };
+  }
+
   async approve(id: string) {
     const creator = await this.findOne(id);
     if (creator.status !== 'pending') {
       throw new BadRequestException('Profile is not in pending state');
     }
     creator.status = 'active';
+
+    // 1. Sync is_creator = true in Supabase (if configured)
+    let fcmToken: string | null = null;
+    if (this.supabase.isConfigured) {
+      try {
+        const client = this.supabase.getClient();
+        await client.from('users').update({ is_creator: true }).eq('id', id);
+        
+        // Fetch user's FCM token to send push notification
+        const { data: userRow } = await client
+          .from('users')
+          .select('fcm_token')
+          .eq('id', id)
+          .maybeSingle();
+        
+        if (userRow && userRow.fcm_token) {
+          fcmToken = userRow.fcm_token;
+        }
+      } catch (e) {
+        console.warn('Failed to update users.is_creator or fetch FCM token in Supabase:', (e as Error).message);
+      }
+    }
+
+    // 2. Send push notification to user on approval
+    if (fcmToken) {
+      try {
+        await admin.messaging().send({
+          token: fcmToken,
+          notification: {
+            title: 'Congratulations 🎉',
+            body: 'Your listener profile has been approved.\nYou can now receive calls and start earning.',
+          },
+          android: {
+            priority: 'high',
+          },
+        });
+        console.log(`[FCM] Approval push notification sent to user: ${id}`);
+      } catch (e) {
+        console.warn('[FCM] Send approval notification failed:', (e as Error).message);
+      }
+    }
+
     return {
       message: `Host profile ${creator.name} approved successfully`,
       creator,
@@ -386,7 +481,10 @@ export class CreatorsService {
     if (this.supabase.isConfigured) {
       const client = this.supabase.getClient();
 
-      // Log into creator_earnings ledger table
+      // Log into creator_earnings ledger table.
+      // ON CONFLICT: if the DB unique constraint uq_creator_earnings_call_id fires
+      // (concurrent duplicate end-call request), we treat it as idempotent and
+      // fetch the already-existing record instead of crashing.
       const { data: earningData, error: earningErr } = await client
         .from('creator_earnings')
         .insert({
@@ -400,12 +498,18 @@ export class CreatorsService {
         .single();
 
       if (earningErr) {
+        // Postgres unique-violation code: 23505
+        if ((earningErr as any).code === '23505') {
+          console.warn(`[recordEarnings] Duplicate earning suppressed for call ${callId} — unique constraint hit.`);
+          return; // Exit cleanly; wallet was already credited on the first request.
+        }
         throw new Error(`Failed to log creator earning: ${earningErr.message}`);
       }
 
       record = earningData;
 
-      // Get creator_profile.id to map to creator_wallets.creator_id
+      // Resolve creator_profile.id — creator_wallets.creator_id references
+      // the profile UUID, not the user UUID.
       let creatorProfileId = creatorId;
       const { data: profile } = await client
         .from('creator_profiles')
@@ -417,66 +521,33 @@ export class CreatorsService {
         creatorProfileId = profile.id;
       }
 
-      // Atomic balance update on creator_wallets using creatorProfileId
-      const { data: existingWallet } = await client
-        .from('creator_wallets')
-        .select('*')
-        .eq('creator_id', creatorProfileId)
-        .maybeSingle();
+      // ── Atomic wallet credit ────────────────────────────────────────────────
+      // Uses a Postgres UPSERT function (increment_creator_wallet) instead of
+      // the previous SELECT → compute → UPDATE pattern, which was NOT safe
+      // under concurrent requests (lost-update race condition).
+      // The RPC performs: INSERT … ON CONFLICT DO UPDATE (atomic increment).
+      const { error: walletErr } = await client.rpc('increment_creator_wallet', {
+        p_creator_id: creatorProfileId,
+        p_amount: creatorShare,
+      });
 
-      if (existingWallet) {
-        const newTotalEarned = Number(existingWallet.total_earned) + creatorShare;
-        const newAvailableBalance = Number(existingWallet.available_balance) + creatorShare;
-
-        const { error: updateErr } = await client
-          .from('creator_wallets')
-          .update({
-            total_earned: newTotalEarned,
-            available_balance: newAvailableBalance,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('creator_id', creatorProfileId);
-
-        if (updateErr) {
-          console.warn(`Failed to update creator wallet balance for profile ${creatorProfileId}:`, updateErr.message);
-        }
-      } else {
-        const { error: insertErr } = await client
-          .from('creator_wallets')
-          .insert({
-            creator_id: creatorProfileId,
-            total_earned: creatorShare,
-            available_balance: creatorShare,
-            withdrawn_amount: 0.00,
-          });
-
-        if (insertErr) {
-          console.warn(`Failed to initialize creator wallet balance for profile ${creatorProfileId}:`, insertErr.message);
-        }
+      if (walletErr) {
+        console.warn(
+          `Failed to credit creator wallet for profile ${creatorProfileId}:`,
+          walletErr.message,
+        );
       }
 
-      // Sync total_earnings in creator_profiles as well
+      // Sync total_earnings in creator_profiles as well (non-critical, best-effort)
       try {
         if (profile) {
-          const { data: existingProfile } = await client
+          await client
             .from('creator_profiles')
-            .select('total_earnings')
-            .eq('id', creatorProfileId)
-            .maybeSingle();
-
-          if (existingProfile) {
-            const newProfileEarnings = Number(existingProfile.total_earnings) + creatorShare;
-            await client
-              .from('creator_profiles')
-              .update({
-                total_earnings: newProfileEarnings,
-                updated_at: new Date().toISOString(),
-              })
-              .eq('id', creatorProfileId);
-          }
+            .update({ updated_at: new Date().toISOString() })
+            .eq('id', creatorProfileId);
         }
       } catch (e) {
-        console.warn('Failed to sync creator_profiles total_earnings:', (e as Error).message);
+        console.warn('Failed to touch creator_profiles updated_at:', (e as Error).message);
       }
     } else {
       // In-memory fallback

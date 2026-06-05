@@ -4,7 +4,7 @@ import { SupabaseModule } from './supabase/supabase.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 import { WalletsModule } from './wallets/wallets.module';
-import { PaymentsModule } from './payments/payments.module';
+import { PaymentsModule } from './modules/payments/payments.module';
 import { CallsModule } from './calls/calls.module';
 import { CreatorsModule } from './creators/creators.module';
 import { WithdrawalsModule } from './withdrawals/withdrawals.module';

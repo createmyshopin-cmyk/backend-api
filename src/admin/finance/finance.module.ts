@@ -3,7 +3,7 @@ import { AuthModule } from '../../auth/auth.module';
 import { SupabaseModule } from '../../supabase/supabase.module';
 import { UsersModule } from '../../users/users.module';
 import { CreatorsModule } from '../../creators/creators.module';
-import { PaymentsModule } from '../../payments/payments.module';
+import { PaymentsModule } from '../../modules/payments/payments.module';
 import { CallsModule } from '../../calls/calls.module';
 import { WithdrawalsModule } from '../../withdrawals/withdrawals.module';
 import { FinanceService } from './finance.service';

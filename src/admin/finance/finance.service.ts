@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { UsersService } from '../../users/users.service';
 import { CreatorsService } from '../../creators/creators.service';
-import { PaymentsService } from '../../payments/payments.service';
+import { PaymentsService } from '../../modules/payments/payments.service';
 import { CallsService } from '../../calls/calls.service';
 import { WithdrawalsService } from '../../withdrawals/withdrawals.service';
 
@@ -144,11 +144,11 @@ export class FinanceService {
     const last24hDate = new Date(last24h);
 
     const todayRevenue = memPayments
-      .filter(p => p.status === 'success' && new Date(p.date) >= todayDate)
+      .filter(p => p.status === 'success' && new Date(p.createdAt) >= todayDate)
       .reduce((sum, p) => sum + p.amount, 0);
 
     const monthlyRevenue = memPayments
-      .filter(p => p.status === 'success' && new Date(p.date) >= monthDate)
+      .filter(p => p.status === 'success' && new Date(p.createdAt) >= monthDate)
       .reduce((sum, p) => sum + p.amount, 0);
 
     const totalRevenue = memPayments
@@ -161,7 +161,7 @@ export class FinanceService {
 
     const activeUserIds = new Set([
       ...memCalls.filter(c => new Date(c.startedAt) >= last24hDate).map(c => c.callerId),
-      ...memPayments.filter(p => new Date(p.date) >= last24hDate).map(p => p.userId),
+      ...memPayments.filter(p => new Date(p.createdAt) >= last24hDate).map(p => p.userId),
       ...memUsers.filter(u => new Date(u.registeredAt) >= last24hDate).map(u => u.id),
     ]);
     const activeUsers = activeUserIds.size;
@@ -294,7 +294,7 @@ export class FinanceService {
 
     for (const p of memPayments) {
       if (p.status === 'success') {
-        const key = p.date.split('T')[0];
+        const key = p.createdAt.split('T')[0];
         const bucket = map.get(key);
         if (bucket) {
           bucket.revenue += p.amount;
@@ -535,15 +535,15 @@ export class FinanceService {
     const memPayments = this.paymentsService.getMemPayments();
     const filtered = memPayments.filter(p => {
       if (p.status !== 'success') return false;
-      const d = new Date(p.date);
+      const d = new Date(p.createdAt);
       if (start && d < start) return false;
       if (end && d > end) return false;
       return true;
     });
 
     const headers = 'ID,User ID,Amount (₹),Coins Added,Gateway,Order ID,Date\n';
-    const rows = filtered.map(r => 
-      `"${r.id}","${r.userId}",${r.amount},${r.coins},"${r.gateway}","${r.transactionId}","${r.date}"`
+    const rows = filtered.map(r =>
+      `"${r.id}","${r.userId}",${r.amount},${r.coins},"${r.gateway}","${r.gatewayOrderId}","${r.createdAt}"`
     ).join('\n');
 
     return headers + rows;
