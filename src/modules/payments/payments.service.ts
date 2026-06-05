@@ -269,11 +269,11 @@ export class PaymentsService {
     const receiptId     = `rcpt_${Date.now().toString().slice(-8)}_${packageId.slice(-4)}`;
 
     // 2. Create order on Razorpay gateway using RazorpayService
-    const { gatewayOrderId, gatewayOrderData } = await this.razorpayService.createOrder(
+    const { gatewayOrderId, gatewayOrderData, usedMock } = await this.razorpayService.createOrder(
       amountInPaise,
       pkg.currency,
       receiptId,
-      { userId, packageId }
+      { userId, packageId },
     );
 
     // 3. Persist a 'pending' payment record before returning to client
@@ -318,11 +318,11 @@ export class PaymentsService {
       this.memPayments.unshift(savedPayment);
     }
 
-    const mockCheckout = !this.razorpayService.isConfigured;
+    const mockCheckout = usedMock || !this.razorpayService.isConfigured;
 
     return {
       payment: savedPayment,
-      /** True when Railway has no Razorpay keys — app must use mock verify, not Razorpay SDK */
+      /** True when Razorpay keys are missing/invalid or gateway order uses mock — app skips Razorpay SDK */
       mockCheckout,
       // Return everything Flutter's Razorpay SDK needs for checkout
       razorpayOrder: {
