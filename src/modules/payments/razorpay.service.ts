@@ -1,9 +1,20 @@
-import { Injectable, BadRequestException, Logger, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  Logger,
+  OnModuleInit,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import * as crypto from 'crypto';
 import { createRazorpayClient, RazorpayInstance } from './razorpay-client';
 
 function sanitizeKeyId(raw: string): string {
-  return raw.trim().replace(/^["']|["']$/g, '');
+  let id = raw.trim().replace(/^["']|["']$/g, '');
+  // Common Railway typo: zp_test_... instead of rzp_test_...
+  if (id.startsWith('zp_test_')) {
+    id = `r${id}`;
+  }
+  return id;
 }
 
 function sanitizeKeySecret(raw: string): string {
@@ -40,8 +51,7 @@ export class RazorpayService implements OnModuleInit {
   private razorpay: RazorpayInstance | null = null;
   private keyId: string;
   private keySecret: string;
-  /** After auth failure, skip Razorpay API until process restart */
-  private forceMockCheckout = false;
+  private startupCheckOk = false;
 
   constructor() {
     this.keyId = sanitizeKeyId(process.env.RAZORPAY_KEY_ID || '');
@@ -66,13 +76,13 @@ export class RazorpayService implements OnModuleInit {
     this.razorpay = null;
     if (this.keyId && !isValidRazorpayKeyId(this.keyId)) {
       this.logger.warn(
-        'RAZORPAY_KEY_ID invalid — must start with rzp_test_ or rzp_live_ (not zp_test_). Using mock checkout.',
+        'RAZORPAY_KEY_ID invalid — must start with rzp_test_ or rzp_live_ (zp_test_ is auto-corrected if missing the leading r).',
       );
     }
   }
 
   get isConfigured(): boolean {
-    return this.razorpay !== null && !this.forceMockCheckout;
+    return this.razorpay !== null;
   }
 
   getKeyId(): string {
@@ -86,20 +96,20 @@ export class RazorpayService implements OnModuleInit {
       keyIdSet: Boolean(this.keyId),
       keyIdPreview: this.keyId ? `${this.keyId.slice(0, 15)}...` : null,
       secretLength: this.keySecret.length,
-      authFailed: this.forceMockCheckout,
-      message:
-        this.isConfigured
-          ? 'Razorpay API keys accepted'
-          : 'Using mock checkout — regenerate matching Test API keys in Razorpay Dashboard (Key ID + Secret together)',
+      startupCheckOk: this.startupCheckOk,
+      allowMock: this.allowMockCheckout(),
+      message: this.isConfigured
+        ? this.startupCheckOk
+          ? 'Razorpay API OK'
+          : 'Razorpay client ready — startup health check failed; create-order will still try'
+        : 'Razorpay keys missing or invalid — set RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET on Railway',
     };
   }
 
   async onModuleInit(): Promise<void> {
     if (!this.razorpay) {
       if (this.keyId) {
-        this.logger.warn(
-          'Razorpay: no valid client — payments use mock checkout until keys are fixed',
-        );
+        this.logger.warn('Razorpay: no valid client — check KEY_ID format and matching KEY_SECRET on Railway');
       }
       return;
     }
@@ -110,12 +120,11 @@ export class RazorpayService implements OnModuleInit {
         currency: 'INR',
         receipt: `health_${Date.now()}`.slice(0, 40),
       });
-      this.forceMockCheckout = false;
+      this.startupCheckOk = true;
       this.logger.log(`Razorpay API OK — using key ${this.keyId.slice(0, 15)}...`);
     } catch (e: unknown) {
       const msg = extractRazorpayError(e);
-      this.forceMockCheckout = true;
-      this.razorpay = null;
+      this.startupCheckOk = false;
       this.logger.warn(
         `Razorpay startup check failed: ${msg}. Fix Railway RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET, then redeploy.`,
       );
@@ -132,13 +141,11 @@ export class RazorpayService implements OnModuleInit {
     const safeCurrency = (currency || 'INR').toUpperCase();
     const safeAmount = Math.max(100, Math.round(amountInPaise));
 
-    // Retry real Razorpay after keys were fixed on Railway (clears stale forceMock from old deploy)
-    if (this.forceMockCheckout) {
-      this.forceMockCheckout = false;
+    if (!this.razorpay) {
       this.initClientIfPossible();
     }
 
-    if (this.razorpay && !this.forceMockCheckout) {
+    if (this.razorpay) {
       try {
         const order = await this.razorpay.orders.create({
           amount: safeAmount,
@@ -154,20 +161,33 @@ export class RazorpayService implements OnModuleInit {
         };
       } catch (e: unknown) {
         const msg = extractRazorpayError(e);
-        if (/authentication/i.test(msg)) {
-          this.forceMockCheckout = true;
-          this.razorpay = null;
-          this.logger.warn(
-            'Razorpay authentication failed — check KEY_ID and KEY_SECRET are a matching pair from the dashboard. Using mock checkout until restart.',
-          );
-        } else {
-          this.logger.error(`Razorpay orders.create failed, falling back to mock checkout: ${msg}`);
-        }
-        return this.createMockOrder(safeAmount, safeCurrency, receiptId);
+        this.logger.error(`Razorpay orders.create failed: ${msg}`);
+        return this.failOrMock(`Razorpay order failed: ${msg}`, safeAmount, safeCurrency, receiptId);
       }
     }
 
-    return this.createMockOrder(safeAmount, safeCurrency, receiptId);
+    if (!this.keyId || !this.keySecret) {
+      return this.failOrMock('Razorpay API keys are not configured.', safeAmount, safeCurrency, receiptId);
+    }
+    return this.failOrMock('Razorpay client is not available.', safeAmount, safeCurrency, receiptId);
+  }
+
+  private allowMockCheckout(): boolean {
+    return process.env.RAZORPAY_ALLOW_MOCK === 'true';
+  }
+
+  private failOrMock(
+    reason: string,
+    amountInPaise: number,
+    currency: string,
+    receiptId: string,
+  ): { gatewayOrderId: string; gatewayOrderData: Record<string, unknown>; usedMock: boolean } {
+    if (!this.allowMockCheckout()) {
+      throw new ServiceUnavailableException(
+        `${reason} Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET on Railway (rzp_test_...) and redeploy.`,
+      );
+    }
+    return this.createMockOrder(amountInPaise, currency, receiptId);
   }
 
   private createMockOrder(
@@ -176,7 +196,7 @@ export class RazorpayService implements OnModuleInit {
     receiptId: string,
   ): { gatewayOrderId: string; gatewayOrderData: Record<string, unknown>; usedMock: boolean } {
     const gatewayOrderId = `order_mock_${Date.now().toString().slice(-8)}`;
-    this.logger.warn(`Using mock order ${gatewayOrderId} — no real Razorpay order (check API keys on Railway)`);
+    this.logger.warn(`Using mock order ${gatewayOrderId} (RAZORPAY_ALLOW_MOCK=true only)`);
     return {
       gatewayOrderId,
       gatewayOrderData: {
@@ -191,9 +211,11 @@ export class RazorpayService implements OnModuleInit {
   }
 
   verifySignature(orderId: string, paymentId: string, signature: string): void {
-    if (!this.keySecret || this.keySecret === 'mockKeySecret' || !this.razorpay) {
-      console.warn('[RazorpayService] RAZORPAY_KEY_SECRET not set — skipping signature check (dev mode)');
+    if (orderId.startsWith('order_mock_') && this.allowMockCheckout()) {
       return;
+    }
+    if (!this.keySecret || this.keySecret === 'mockKeySecret') {
+      throw new BadRequestException('Razorpay secret not configured — cannot verify payment');
     }
 
     const expectedSig = crypto
