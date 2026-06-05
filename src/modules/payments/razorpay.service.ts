@@ -31,10 +31,12 @@ export class RazorpayService {
   private razorpay: RazorpayInstance | null = null;
   private keyId: string;
   private keySecret: string;
+  /** After auth failure, skip Razorpay API until process restart */
+  private forceMockCheckout = false;
 
   constructor() {
-    this.keyId = (process.env.RAZORPAY_KEY_ID || '').trim();
-    this.keySecret = (process.env.RAZORPAY_KEY_SECRET || '').trim();
+    this.keyId = (process.env.RAZORPAY_KEY_ID || '').trim().replace(/^["']|["']$/g, '');
+    this.keySecret = (process.env.RAZORPAY_KEY_SECRET || '').trim().replace(/^["']|["']$/g, '');
 
     if (
       this.keyId &&
@@ -54,7 +56,7 @@ export class RazorpayService {
   }
 
   get isConfigured(): boolean {
-    return this.razorpay !== null;
+    return this.razorpay !== null && !this.forceMockCheckout;
   }
 
   getKeyId(): string {
@@ -71,7 +73,7 @@ export class RazorpayService {
     const safeCurrency = (currency || 'INR').toUpperCase();
     const safeAmount = Math.max(100, Math.round(amountInPaise));
 
-    if (this.razorpay) {
+    if (this.razorpay && !this.forceMockCheckout) {
       try {
         const order = await this.razorpay.orders.create({
           amount: safeAmount,
@@ -86,7 +88,15 @@ export class RazorpayService {
         };
       } catch (e: unknown) {
         const msg = extractRazorpayError(e);
-        this.logger.error(`Razorpay orders.create failed, falling back to mock checkout: ${msg}`);
+        if (/authentication/i.test(msg)) {
+          this.forceMockCheckout = true;
+          this.razorpay = null;
+          this.logger.warn(
+            'Razorpay authentication failed — check KEY_ID and KEY_SECRET are a matching pair from the dashboard. Using mock checkout until restart.',
+          );
+        } else {
+          this.logger.error(`Razorpay orders.create failed, falling back to mock checkout: ${msg}`);
+        }
         return this.createMockOrder(safeAmount, safeCurrency, receiptId);
       }
     }

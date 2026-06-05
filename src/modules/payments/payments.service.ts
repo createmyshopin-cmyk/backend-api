@@ -329,7 +329,7 @@ export class PaymentsService {
         id:       gatewayOrderId,
         amount:   amountInPaise,
         currency: pkg.currency,
-        keyId:    this.razorpayService.getKeyId(),
+        keyId:    mockCheckout ? 'rzp_test_mockKeyId' : this.razorpayService.getKeyId(),
         ...gatewayOrderData,
       },
     };
@@ -448,12 +448,17 @@ export class PaymentsService {
         .single();
 
       if (error || !data) throw new NotFoundException(`Payment record ${paymentId} not found`);
-      if (data.status !== 'pending' && data.status !== 'created') {
-        throw new BadRequestException(`Payment already processed (status: ${data.status as string})`);
-      }
 
       const userId     = data.user_id as string;
       const coinsAdded = Number(data.coins_added);
+
+      if (data.status === 'success') {
+        const user = await this.usersService.findOne(userId);
+        return this.buildSuccessResponse(data, (data.gateway_payment_id as string) || transactionId, user.coins);
+      }
+      if (data.status !== 'pending' && data.status !== 'created') {
+        throw new BadRequestException(`Payment already processed (status: ${data.status as string})`);
+      }
 
       const user        = await this.usersService.findOne(userId);
       const balanceBefore = user.coins;
@@ -479,6 +484,10 @@ export class PaymentsService {
     // In-memory path
     const payment = this.memPayments.find(p => p.id === paymentId);
     if (!payment) throw new NotFoundException(`Payment record ${paymentId} not found`);
+    if (payment.status === 'success') {
+      const user = await this.usersService.findOne(payment.userId);
+      return this.buildSuccessResponse(payment, payment.gatewayPaymentId || transactionId, user.coins);
+    }
     if (payment.status !== 'pending' && payment.status !== 'created') {
       throw new BadRequestException(`Payment already processed (status: ${payment.status})`);
     }
