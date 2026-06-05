@@ -148,6 +148,7 @@ export class PaymentsController {
   @ApiResponse({ status: 404, description: 'Payment record not found.' })
   @ApiResponse({ status: 409, description: 'Duplicate verify call — coins already credited.' })
   verify(@Body() dto: VerifyPaymentDto) {
+    console.log('VERIFY REQUEST', dto);
     return this.paymentsService.verifyPayment(dto);
   }
 

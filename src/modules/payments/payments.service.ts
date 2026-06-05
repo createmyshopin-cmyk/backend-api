@@ -338,6 +338,9 @@ export class PaymentsService {
   // ── Verify payment & credit coins ──────────────────────────────────────────
 
   async verifyPayment(dto: VerifyPaymentDto) {
+    console.log('ORDER', dto.razorpayOrderId);
+    console.log('PAYMENT', dto.razorpayPaymentId);
+
     // ── Branch A: App-internal / mock checkout (no Razorpay signature) ────────
     // Used by dev mode or admin "manually complete" flows.
     if (dto.paymentId && dto.transactionId && !dto.razorpaySignature) {
@@ -353,6 +356,7 @@ export class PaymentsService {
 
     // 1. Cryptographic signature check — MUST happen before any DB write
     this.razorpayService.verifySignature(dto.razorpayOrderId, dto.razorpayPaymentId, dto.razorpaySignature);
+    console.log('Signature validation passed');
 
     // 2. Look up the pending payment by gateway_order_id
     if (this.supabase.isConfigured) {
@@ -379,6 +383,8 @@ export class PaymentsService {
       p_payment_id: razorpayPaymentId,
     });
 
+    console.log('RPC verify_razorpay_payment_atomic result:', { data, error: error?.message });
+
     if (error) {
       if (error.message.includes('payment_not_found')) {
         throw new NotFoundException(`No payment record found for order ${razorpayOrderId}`);
@@ -396,7 +402,26 @@ export class PaymentsService {
       throw new InternalServerErrorException('No data returned from atomic verification');
     }
 
-    // data contains { status, payment, newBalance }
+    // RPC returns { success, coins_added, new_balance } (wallet-based atomic credit)
+    if (data.success === true) {
+      const { data: paymentRow, error: fetchErr } = await client
+        .from('payments')
+        .select('*')
+        .eq('gateway_order_id', razorpayOrderId)
+        .single();
+
+      if (fetchErr || !paymentRow) {
+        throw new InternalServerErrorException('Payment verified but row could not be loaded');
+      }
+
+      return this.buildSuccessResponse(
+        paymentRow,
+        razorpayPaymentId,
+        Number(data.new_balance),
+      );
+    }
+
+    // Legacy RPC shape: { status, payment, newBalance }
     if (data.status === 'already_verified' || data.status === 'success') {
       return this.buildSuccessResponse(data.payment, razorpayPaymentId, data.newBalance);
     }
