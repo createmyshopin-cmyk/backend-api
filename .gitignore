@@ -4,6 +4,7 @@ node_modules/
 # Compilation output
 dist/
 build/
+*.tsbuildinfo
 
 # Local configuration / Environment variables
 .env

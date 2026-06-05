@@ -24,6 +24,7 @@ import {
   ApiQuery,
 } from '@nestjs/swagger';
 import { PaymentsService } from './payments.service';
+import { RazorpayService } from './razorpay.service';
 import { CreatePackageDto, UpdatePackageDto } from './dto/coin-package.dto';
 import { VerifyPaymentDto } from './dto/verify-payment.dto';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -35,7 +36,16 @@ import { AdminGuard } from '../../auth/admin.guard';
 @UseGuards(JwtAuthGuard)
 @Controller('payments')
 export class PaymentsController {
-  constructor(private readonly paymentsService: PaymentsService) {}
+  constructor(
+    private readonly paymentsService: PaymentsService,
+    private readonly razorpayService: RazorpayService,
+  ) {}
+
+  @Get('gateway-status')
+  @ApiOperation({ summary: 'Razorpay vs mock checkout mode (no secrets exposed)' })
+  getGatewayStatus() {
+    return this.razorpayService.getGatewayStatus();
+  }
 
   // ── Coin packages (public) ──────────────────────────────────────────────────
 

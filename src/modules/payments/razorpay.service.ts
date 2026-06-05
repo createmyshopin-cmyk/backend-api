@@ -1,9 +1,18 @@
-import { Injectable, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger, OnModuleInit } from '@nestjs/common';
 import * as crypto from 'crypto';
 import { createRazorpayClient, RazorpayInstance } from './razorpay-client';
 
+function sanitizeKeyId(raw: string): string {
+  return raw.trim().replace(/^["']|["']$/g, '');
+}
+
+function sanitizeKeySecret(raw: string): string {
+  // Strip quotes, spaces, newlines (common copy/paste issues on Railway)
+  return raw.trim().replace(/^["']|["']$/g, '').replace(/\s/g, '');
+}
+
 function isValidRazorpayKeyId(keyId: string): boolean {
-  return /^rzp_(test|live)_[A-Za-z0-9]+$/.test(keyId.trim());
+  return /^rzp_(test|live)_[A-Za-z0-9]+$/.test(keyId);
 }
 
 function stringifyNotes(notes: Record<string, string | number>): Record<string, string> {
@@ -26,7 +35,7 @@ function extractRazorpayError(e: unknown): string {
 }
 
 @Injectable()
-export class RazorpayService {
+export class RazorpayService implements OnModuleInit {
   private readonly logger = new Logger(RazorpayService.name);
   private razorpay: RazorpayInstance | null = null;
   private keyId: string;
@@ -35,8 +44,8 @@ export class RazorpayService {
   private forceMockCheckout = false;
 
   constructor() {
-    this.keyId = (process.env.RAZORPAY_KEY_ID || '').trim().replace(/^["']|["']$/g, '');
-    this.keySecret = (process.env.RAZORPAY_KEY_SECRET || '').trim().replace(/^["']|["']$/g, '');
+    this.keyId = sanitizeKeyId(process.env.RAZORPAY_KEY_ID || '');
+    this.keySecret = sanitizeKeySecret(process.env.RAZORPAY_KEY_SECRET || '');
 
     if (
       this.keyId &&
@@ -61,6 +70,49 @@ export class RazorpayService {
 
   getKeyId(): string {
     return this.keyId || 'rzp_test_mockKeyId';
+  }
+
+  /** For debugging — never exposes secrets */
+  getGatewayStatus() {
+    return {
+      mode: this.isConfigured ? 'razorpay' : 'mock',
+      keyIdSet: Boolean(this.keyId),
+      keyIdPreview: this.keyId ? `${this.keyId.slice(0, 15)}...` : null,
+      secretLength: this.keySecret.length,
+      authFailed: this.forceMockCheckout,
+      message:
+        this.isConfigured
+          ? 'Razorpay API keys accepted'
+          : 'Using mock checkout — regenerate matching Test API keys in Razorpay Dashboard (Key ID + Secret together)',
+    };
+  }
+
+  async onModuleInit(): Promise<void> {
+    if (!this.razorpay) {
+      if (this.keyId) {
+        this.logger.warn(
+          'Razorpay: no valid client — payments use mock checkout until keys are fixed',
+        );
+      }
+      return;
+    }
+
+    try {
+      await this.razorpay.orders.create({
+        amount: 100,
+        currency: 'INR',
+        receipt: `health_${Date.now()}`.slice(0, 40),
+      });
+      this.logger.log('Razorpay API connection verified (test order created)');
+    } catch (e: unknown) {
+      const msg = extractRazorpayError(e);
+      this.forceMockCheckout = true;
+      this.razorpay = null;
+      this.logger.warn(
+        `Razorpay startup check failed: ${msg}. Using mock checkout. ` +
+          'Regenerate API keys in Dashboard → Account & Settings → API Keys (Test mode) and update Railway variables.',
+      );
+    }
   }
 
   async createOrder(
