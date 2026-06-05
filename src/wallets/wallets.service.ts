@@ -29,10 +29,41 @@ export class WalletsService {
 
   async getBalance(userId: string) {
     const user = await this.usersService.findOne(userId);
+    let walletBalance: number | null = null;
+
+    if (this.supabase.isConfigured) {
+      const { data: walletRow, error } = await this.supabase
+        .getClient()
+        .from('wallets')
+        .select('coin_balance')
+        .eq('user_id', userId)
+        .maybeSingle();
+
+      if (!error && walletRow) {
+        walletBalance = Number(walletRow.coin_balance ?? 0);
+        console.log(
+          `[WalletsService] getBalance user=${userId} ` +
+            `users.coins=${user.coins} wallets.coin_balance=${walletBalance}`,
+        );
+        return {
+          userId: user.id,
+          name: user.name,
+          coins: walletBalance,
+          coin_balance: walletBalance,
+        };
+      }
+
+      console.warn(
+        `[WalletsService] getBalance user=${userId} wallet row missing — ` +
+          `falling back to users.coins=${user.coins}`,
+      );
+    }
+
     return {
       userId: user.id,
       name: user.name,
-      coins: user.coins
+      coins: user.coins,
+      coin_balance: walletBalance,
     };
   }
 
