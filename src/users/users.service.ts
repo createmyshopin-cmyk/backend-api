@@ -17,7 +17,7 @@ export interface User {
   email: string;
   coins: number;
   totalCalls: number;
-  status: 'active' | 'blocked';
+  status: 'active' | 'blocked' | 'suspended';
   registeredAt: string;
   firebase_uid?: string;
   fullName?: string;
@@ -26,13 +26,26 @@ export interface User {
   avatarUrl?: string;
   language?: string;
   onboardingCompleted?: boolean;
+  isCreator?: boolean;
   fcm_token?: string;
 }
 
 const USER_SELECT =
-  'id, name, phone, email, coins, total_calls, status, created_at, firebase_uid, full_name, date_of_birth, gender, avatar_url, language, onboarding_completed, fcm_token';
+  'id, name, phone, email, coins, total_calls, status, created_at, firebase_uid, full_name, date_of_birth, gender, avatar_url, language, onboarding_completed, is_creator, fcm_token';
 
 // ─── Row → domain mapping ────────────────────────────────────────────────────
+
+/** Canonical display name — always prefers `full_name` over legacy `name`. */
+export function resolveDisplayName(
+  row: { full_name?: string | null; name?: string | null },
+  fallback = '',
+): string {
+  const full = String(row.full_name ?? '').trim();
+  if (full) return full;
+  const legacy = String(row.name ?? '').trim();
+  if (legacy) return legacy;
+  return fallback;
+}
 
 export interface PublicUserProfile {
   id: string;
@@ -47,10 +60,15 @@ export interface PublicUserProfile {
   coins: number;
   status: string;
   language?: string;
+  isCreator: boolean;
+  creatorStatus: string;
 }
 
 export function toPublicProfile(user: User): PublicUserProfile {
-  const fullName = user.fullName || user.name || '';
+  const fullName = resolveDisplayName(
+    { full_name: user.fullName, name: user.name },
+    '',
+  );
   return {
     id: user.id,
     fullName,
@@ -64,32 +82,37 @@ export function toPublicProfile(user: User): PublicUserProfile {
     coins: user.coins,
     status: user.status,
     language: user.language,
+    isCreator: Boolean(user.isCreator),
+    creatorStatus: user.isCreator ? 'active' : 'none',
   };
 }
 
 function rowToUser(row: Record<string, unknown>): User {
-  const fullName =
-    (row.full_name as string) || (row.name as string) || undefined;
+  const displayName = resolveDisplayName({
+    full_name: row.full_name as string | null,
+    name: row.name as string | null,
+  });
   const dateOfBirth = row.date_of_birth
     ? String(row.date_of_birth).slice(0, 10)
     : undefined;
 
   return {
     id: row.id as string,
-    name: fullName || (row.name as string) || '',
+    name: displayName,
     phone: (row.phone as string) || '',
     email: (row.email as string) || '',
     coins: Number(row.coins ?? 0),
     totalCalls: Number(row.total_calls ?? 0),
-    status: ((row.status as string) === 'blocked' ? 'blocked' : 'active'),
+    status: (row.status === 'blocked' || row.status === 'suspended' ? row.status : 'active'),
     registeredAt: (row.created_at as string) || new Date().toISOString(),
     firebase_uid: (row.firebase_uid as string) || undefined,
-    fullName,
+    fullName: displayName || undefined,
     dateOfBirth,
     gender: (row.gender as string) || undefined,
     avatarUrl: (row.avatar_url as string) || undefined,
     language: (row.language as string) || undefined,
     onboardingCompleted: Boolean(row.onboarding_completed ?? false),
+    isCreator: Boolean(row.is_creator ?? false),
     fcm_token: (row.fcm_token as string) || undefined,
   };
 }
@@ -248,6 +271,7 @@ export class UsersService {
             firebase_uid: data.firebase_uid,
             phone: data.phone,
             name: data.name || '',
+            full_name: data.name || '',
             coins: 100,
             status: 'active',
           })
@@ -284,7 +308,7 @@ export class UsersService {
 
   // ─── Update ────────────────────────────────────────────────────────────────
 
-  async updateStatus(id: string, status: 'active' | 'blocked') {
+  async updateStatus(id: string, status: 'active' | 'blocked' | 'suspended') {
     if (this.supabase.isConfigured) {
       try {
         const { error } = await this.supabase

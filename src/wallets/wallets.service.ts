@@ -12,6 +12,8 @@ export interface WalletTransaction {
   amount: number;
   balanceAfter: number;
   date: string;
+  referenceId?: string;
+  description?: string;
 }
 
 @Injectable()
@@ -90,6 +92,8 @@ export class WalletsService {
             amount: Number(row.amount),
             balanceAfter: Number(row.balance_after),
             date: row.created_at,
+            referenceId: row.reference_id,
+            description: row.description,
           }));
         }
         console.warn('WalletsService.getTransactions error:', error?.message);
@@ -129,7 +133,8 @@ export class WalletsService {
       type: dto.amount >= 0 ? 'admin_adjustment_add' : 'admin_adjustment_deduct',
       amount: dto.amount,
       balanceAfter: updatedUser.coins,
-      date: new Date().toISOString()
+      date: new Date().toISOString(),
+      description: dto.reason,
     };
     
     this.transactions.unshift(txn);

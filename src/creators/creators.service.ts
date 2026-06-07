@@ -5,6 +5,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
+import { resolveDisplayName } from '../users/users.service';
 import admin from '../auth/firebase-admin';
 
 /** Online when last heartbeat was within this window (seconds). */
@@ -19,7 +20,7 @@ export interface Creator {
   languages: string[];
   gender: string;
   experience: string;
-  status: 'pending' | 'active' | 'suspended';
+  status: 'pending' | 'active' | 'suspended' | 'rejected';
   rating: number;
   completedCalls: number;
   revenueGenerated: number;
@@ -223,6 +224,7 @@ export class CreatorsService {
     const { data, error } = await this.supabase.getClient().from('users').select(`
         id,
         name,
+        full_name,
         email,
         phone,
         gender,
@@ -262,9 +264,17 @@ export class CreatorsService {
         : ['English'];
       const createdAt = row.created_at as string | undefined;
 
+      const displayName = resolveDisplayName(
+        {
+          full_name: row.full_name as string | null,
+          name: row.name as string | null,
+        },
+        'Creator',
+      );
+
       return {
         id: row.id as string,
-        name: (row.name as string) || 'Creator',
+        name: displayName,
         phone: (row.phone as string) || '',
         email: (row.email as string) || '',
         bio: (cp?.bio as string) || '',
@@ -282,7 +292,9 @@ export class CreatorsService {
           (cp?.last_seen_at as string) || this.lastSeenByUserId.get(row.id as string),
           Boolean(cp?.is_online ?? cp?.online_status),
         ),
-        profileImage: (row.profile_image as string) || `https://i.pravatar.cc/150?u=${row.name}`,
+        profileImage:
+          (row.profile_image as string) ||
+          `https://i.pravatar.cc/150?u=${displayName}`,
         createdAt,
         isNew: this.isRecentlyJoined(createdAt),
       };
@@ -309,6 +321,10 @@ export class CreatorsService {
 
   async getSuspended() {
     return this.creators.filter((c) => c.status === 'suspended');
+  }
+
+  async getRejected() {
+    return this.creators.filter((c) => c.status === 'rejected');
   }
 
   async findOne(id: string) {
@@ -438,9 +454,18 @@ export class CreatorsService {
     if (creator.status !== 'pending') {
       throw new BadRequestException('Profile is not in pending state');
     }
-    this.creators = this.creators.filter((c) => c.id !== id);
+    creator.status = 'rejected';
+    if (this.supabase.isConfigured) {
+      try {
+        const client = this.supabase.getClient();
+        await client.from('creator_profiles').delete().eq('user_id', id);
+      } catch (e) {
+        console.warn('Failed to delete creator_profile on reject in Supabase:', (e as Error).message);
+      }
+    }
     return {
       message: `Host application for ${creator.name} rejected`,
+      creator,
     };
   }
 
@@ -508,8 +533,7 @@ export class CreatorsService {
 
       record = earningData;
 
-      // Resolve creator_profile.id — creator_wallets.creator_id references
-      // the profile UUID, not the user UUID.
+      // Get creator_profile.id to map to creator_wallets.creator_id
       let creatorProfileId = creatorId;
       const { data: profile } = await client
         .from('creator_profiles')
