@@ -57,4 +57,9 @@ export class ListAdminUsersDto {
   @IsOptional()
   @IsIn(['asc', 'desc'])
   sortOrder?: 'asc' | 'desc' = 'desc';
+
+  @ApiPropertyOptional({ enum: ['all', 'listener', 'non_listener'], default: 'all' })
+  @IsOptional()
+  @IsIn(['all', 'listener', 'non_listener'])
+  isCreator?: 'all' | 'listener' | 'non_listener' = 'all';
 }
