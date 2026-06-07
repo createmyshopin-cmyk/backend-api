@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../../supabase/supabase.service';
 import { UsersService } from '../../users/users.service';
 import { CreatorsService } from '../../creators/creators.service';
-import { PaymentsService } from '../../modules/payments/payments.service';
+import { PaymentsService } from '../../payments/payments.service';
 import { CallsService } from '../../calls/calls.service';
 import { WithdrawalsService } from '../../withdrawals/withdrawals.service';
 

@@ -5,9 +5,10 @@ import { WalletsController } from './wallets.controller';
 import { WalletController } from './wallet.controller';
 import { UsersModule } from '../users/users.module';
 import { CoinTransactionsModule } from '../coin-transactions/coin-transactions.module';
+import { SupabaseModule } from '../supabase/supabase.module';
 
 @Module({
-  imports: [AuthModule, UsersModule, CoinTransactionsModule],
+  imports: [AuthModule, UsersModule, CoinTransactionsModule, SupabaseModule],
   controllers: [WalletsController, WalletController],
   providers: [WalletsService],
   exports: [WalletsService],

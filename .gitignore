@@ -11,6 +11,12 @@ build/
 .env.production
 .env.development
 .env.local
+config/firebase/service-account.json
+
+# Test caches
+.pytest_cache/
+__pycache__/
+*.pyc
 
 # Logs
 logs/

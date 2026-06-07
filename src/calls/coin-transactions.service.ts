@@ -6,7 +6,8 @@ export type CoinTransactionType =
   | 'recharge'
   | 'admin_adjustment_add'
   | 'admin_adjustment_deduct'
-  | 'refund';
+  | 'refund'
+  | 'gift_deduction';
 
 export interface CoinTransactionRecord {
   id: string;
@@ -84,6 +85,25 @@ export class CoinTransactionsService {
     };
     this.memTransactions.unshift(txn);
     return txn;
+  }
+
+  recordGiftDeduction(params: {
+    userId: string;
+    giftTransactionId: string;
+    coinsSpent: number;
+    balanceBefore: number;
+    balanceAfter: number;
+    giftName: string;
+  }) {
+    return this.record({
+      userId: params.userId,
+      type: 'gift_deduction',
+      amount: -params.coinsSpent,
+      balanceBefore: params.balanceBefore,
+      balanceAfter: params.balanceAfter,
+      referenceId: params.giftTransactionId,
+      description: `Gift sent: ${params.giftName}`,
+    });
   }
 
   recordCallDeduction(params: {

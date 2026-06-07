@@ -1,4 +1,4 @@
-import { Controller, Post, Body, HttpCode, HttpStatus, Get, UseGuards, Request } from '@nestjs/common';
+import { Controller, Post, Body, HttpCode, HttpStatus, Get, UseGuards, Request, ForbiddenException } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { User, UsersService, toPublicProfile } from '../users/users.service';
@@ -28,6 +28,9 @@ export class AuthController {
   @ApiOperation({ summary: 'Register New Administrator' })
   @ApiResponse({ status: 201, description: 'Registration successful.' })
   register(@Body() registerDto: RegisterDto) {
+    if (process.env.NODE_ENV === 'production' && process.env.ALLOW_ADMIN_REGISTER !== 'true') {
+      throw new ForbiddenException('Admin self-registration is disabled in production');
+    }
     return this.authService.register(registerDto);
   }
 

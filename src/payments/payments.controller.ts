@@ -24,28 +24,21 @@ import {
   ApiQuery,
 } from '@nestjs/swagger';
 import { PaymentsService } from './payments.service';
-import { RazorpayService } from './razorpay.service';
-import { CreatePackageDto, UpdatePackageDto } from './dto/coin-package.dto';
-import { VerifyPaymentDto } from './dto/verify-payment.dto';
-import { CreateOrderDto } from './dto/create-order.dto';
-import { JwtAuthGuard } from '../../auth/auth.guard';
-import { AdminGuard } from '../../auth/admin.guard';
+import {
+  CreatePackageDto,
+  UpdatePackageDto,
+  VerifyPaymentDto,
+  CreateOrderDto,
+} from './dto/payment.dto';
+import { JwtAuthGuard } from '../auth/auth.guard';
+import { AdminGuard } from '../auth/admin.guard';
 
 @ApiTags('Recharges & Coin Packages')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller('payments')
 export class PaymentsController {
-  constructor(
-    private readonly paymentsService: PaymentsService,
-    private readonly razorpayService: RazorpayService,
-  ) {}
-
-  @Get('gateway-status')
-  @ApiOperation({ summary: 'Razorpay vs mock checkout mode (no secrets exposed)' })
-  getGatewayStatus() {
-    return this.razorpayService.getGatewayStatus();
-  }
+  constructor(private readonly paymentsService: PaymentsService) {}
 
   // ── Coin packages (public) ──────────────────────────────────────────────────
 
@@ -147,9 +140,11 @@ export class PaymentsController {
   @ApiResponse({ status: 400, description: 'Invalid signature or missing parameters.' })
   @ApiResponse({ status: 404, description: 'Payment record not found.' })
   @ApiResponse({ status: 409, description: 'Duplicate verify call — coins already credited.' })
-  verify(@Body() dto: VerifyPaymentDto) {
-    console.log('VERIFY REQUEST', dto);
-    return this.paymentsService.verifyPayment(dto);
+  verify(
+    @Request() req: { user: { id: string } },
+    @Body() dto: VerifyPaymentDto,
+  ) {
+    return this.paymentsService.verifyPayment(req.user.id, dto);
   }
 
   // ── Admin operations ────────────────────────────────────────────────────────

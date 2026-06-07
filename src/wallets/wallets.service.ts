@@ -12,8 +12,6 @@ export interface WalletTransaction {
   amount: number;
   balanceAfter: number;
   date: string;
-  referenceId?: string;
-  description?: string;
 }
 
 @Injectable()
@@ -31,74 +29,40 @@ export class WalletsService {
 
   async getBalance(userId: string) {
     const user = await this.usersService.findOne(userId);
-    let walletBalance: number | null = null;
-
-    if (this.supabase.isConfigured) {
-      const { data: walletRow, error } = await this.supabase
-        .getClient()
-        .from('wallets')
-        .select('coin_balance')
-        .eq('user_id', userId)
-        .maybeSingle();
-
-      if (!error && walletRow) {
-        walletBalance = Number(walletRow.coin_balance ?? 0);
-        console.log(
-          `[WalletsService] getBalance user=${userId} ` +
-            `users.coins=${user.coins} wallets.coin_balance=${walletBalance}`,
-        );
-        return {
-          userId: user.id,
-          name: user.name,
-          coins: walletBalance,
-          coin_balance: walletBalance,
-        };
-      }
-
-      console.warn(
-        `[WalletsService] getBalance user=${userId} wallet row missing — ` +
-          `falling back to users.coins=${user.coins}`,
-      );
-    }
-
     return {
       userId: user.id,
       name: user.name,
-      coins: user.coins,
-      coin_balance: walletBalance,
+      coins: user.coins
     };
   }
 
   async getTransactions(userId?: string) {
     if (this.supabase.isConfigured) {
       try {
-        let query = this.supabase
-          .getClient()
+        const client = this.supabase.getClient();
+        let q = client
           .from('coin_transactions')
-          .select('*, users(name)')
+          .select('*, users(name, full_name)')
           .order('created_at', { ascending: false });
 
         if (userId) {
-          query = query.eq('user_id', userId);
+          q = q.eq('user_id', userId);
         }
 
-        const { data, error } = await query;
-        if (!error && data) {
-          return data.map(row => ({
-            id: row.id,
-            userId: row.user_id,
-            userName: row.users ? (row.users as any).name : 'Unknown User',
-            type: row.type,
-            amount: Number(row.amount),
-            balanceAfter: Number(row.balance_after),
-            date: row.created_at,
-            referenceId: row.reference_id,
-            description: row.description,
-          }));
-        }
-        console.warn('WalletsService.getTransactions error:', error?.message);
+        const { data, error } = await q.limit(100);
+        if (error) throw new Error(error.message);
+
+        return (data ?? []).map((t: any) => ({
+          id: t.id,
+          userId: t.user_id,
+          userName: t.users?.full_name || t.users?.name || 'User',
+          type: t.type,
+          amount: t.amount,
+          balanceAfter: t.balance_after,
+          date: t.created_at,
+        }));
       } catch (e) {
-        console.warn('WalletsService.getTransactions exception:', (e as Error).message);
+        console.warn('WalletsService.getTransactions Supabase error:', (e as Error).message);
       }
     }
 
@@ -133,8 +97,7 @@ export class WalletsService {
       type: dto.amount >= 0 ? 'admin_adjustment_add' : 'admin_adjustment_deduct',
       amount: dto.amount,
       balanceAfter: updatedUser.coins,
-      date: new Date().toISOString(),
-      description: dto.reason,
+      date: new Date().toISOString()
     };
     
     this.transactions.unshift(txn);

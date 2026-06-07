@@ -3,12 +3,12 @@
  *
  * Usage:
  *   node scripts/smoke-test-api.mjs
- *   API_BASE=https://backend-api-production-140f.up.railway.app/api node scripts/smoke-test-api.mjs
+ *   API_BASE=https://api.creomine.com/api node scripts/smoke-test-api.mjs
  *   API_BASE=http://127.0.0.1:5000/api ADMIN_EMAIL=... ADMIN_PASSWORD=... node scripts/smoke-test-api.mjs
  */
 import 'dotenv/config';
 
-const API_ROOT = (process.env.API_ROOT || 'https://backend-api-production-140f.up.railway.app').replace(/\/$/, '');
+const API_ROOT = (process.env.API_ROOT || 'https://api.creomine.com').replace(/\/$/, '');
 const BASE = (process.env.API_BASE || `${API_ROOT}/api`).replace(/\/$/, '');
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@coincalling.com';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'password123';

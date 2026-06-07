@@ -3,6 +3,7 @@ import {
   ExecutionContext,
   Injectable,
   UnauthorizedException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { UsersService } from '../users/users.service';
@@ -54,9 +55,13 @@ export class JwtAuthGuard implements CanActivate {
 
     try {
       const user = await this.usersService.findOne(userId);
+      if (user.status === 'blocked' || user.status === 'suspended') {
+        throw new ForbiddenException('Account is not active');
+      }
       request.user = user;
       return true;
-    } catch {
+    } catch (e) {
+      if (e instanceof ForbiddenException) throw e;
       throw new UnauthorizedException('Authenticated user not found');
     }
   }

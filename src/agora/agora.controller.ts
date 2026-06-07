@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   HttpCode,
@@ -38,9 +39,15 @@ export class AgoraController {
   })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   @ApiResponse({ status: 500, description: 'Agora credentials not configured.' })
-  generateToken(@Request() _req, @Body() dto: AgoraTokenRequestDto) {
-    const channelName = dto.channelName?.trim() || `call_${Date.now()}`;
-    const { token } = this.callsService.generateAgoraToken({ channelName });
-    return { token, channelName };
+  generateToken(@Request() req: { user: { id: string } }, @Body() dto: AgoraTokenRequestDto) {
+    const channelName = dto.channelName?.trim();
+    if (!channelName) {
+      throw new BadRequestException('channelName is required');
+    }
+    return this.callsService.generateAgoraToken(req.user.id, {
+      channelName,
+      callId: dto.callId,
+      uid: dto.uid,
+    });
   }
 }

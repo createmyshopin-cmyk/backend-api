@@ -167,8 +167,11 @@ export class CallsController {
   })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   @ApiResponse({ status: 500, description: 'Agora credentials not configured.' })
-  generateAgoraToken(@Body() dto: AgoraTokenDto) {
-    return this.callsService.generateAgoraToken(dto);
+  generateAgoraToken(
+    @Request() req: { user: { id: string } },
+    @Body() dto: AgoraTokenDto,
+  ) {
+    return this.callsService.generateAgoraToken(req.user.id, dto);
   }
 
   @Patch('active/:id/status')
@@ -195,7 +198,11 @@ export class CallsController {
   @ApiResponse({ status: 400, description: 'Call already ended.' })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
   @ApiResponse({ status: 404, description: 'Call session not found.' })
-  endCall(@Param('id') id: string, @Body() dto: EndCallDto) {
-    return this.callsService.endCall(id, dto);
+  endCall(
+    @Request() req: { user: { id: string } },
+    @Param('id') id: string,
+    @Body() dto: EndCallDto,
+  ) {
+    return this.callsService.endCall(req.user.id, id, dto);
   }
 }

@@ -3,10 +3,18 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class AgoraTokenRequestDto {
   @ApiPropertyOptional({
-    description: 'Agora channel name. If omitted, the server generates one (e.g. call_123).',
-    example: 'call_123',
+    description: 'Agora channel name from an active call or ringing request (required).',
+    example: 'ch_1748123456789',
   })
+  @IsString()
+  channelName: string;
+
+  @ApiPropertyOptional({ description: 'Optional call session UUID' })
   @IsOptional()
   @IsString()
-  channelName?: string;
+  callId?: string;
+
+  @ApiPropertyOptional({ description: 'Agora UID (0 = auto-assign)' })
+  @IsOptional()
+  uid?: number;
 }

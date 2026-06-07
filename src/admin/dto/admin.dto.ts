@@ -28,6 +28,10 @@ export class UpdateSettingsDto {
   @ApiProperty({ example: 60 })
   @IsNumber()
   commissionRate: number;
+
+  @ApiProperty({ example: 1000 })
+  @IsNumber()
+  minWithdrawal: number;
 }
 
 export class MaintenanceToggleDto {

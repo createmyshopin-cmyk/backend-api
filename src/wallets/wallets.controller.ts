@@ -33,7 +33,15 @@ export class WalletsController {
     @Request() req: { user: { id: string; role?: string } },
     @Query('userId') userId?: string,
   ) {
-    const scopedUserId = req.user.role ? userId : req.user.id;
+    const isAdmin =
+      req.user.role === 'super_admin' ||
+      req.user.role === 'finance_admin' ||
+      req.user.role === 'moderator' ||
+      req.user.role === 'admin';
+    if (userId && userId !== req.user.id && !isAdmin) {
+      throw new ForbiddenException('You can only view your own transactions');
+    }
+    const scopedUserId = isAdmin && userId ? userId : req.user.id;
     return this.walletsService.getTransactions(scopedUserId);
   }
 
