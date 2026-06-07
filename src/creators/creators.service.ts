@@ -168,56 +168,134 @@ export class CreatorsService {
     return created >= sevenDaysAgo;
   }
 
-  /** Online if last_seen_at is within CREATOR_ONLINE_THRESHOLD_SECONDS. */
+  /** Online when is_online is true and last_seen is within threshold. */
   computeIsOnline(
     lastSeenAt?: string | null,
     onlineStatusFallback?: boolean,
   ): boolean {
-    if (lastSeenAt) {
-      const elapsedMs = Date.now() - new Date(lastSeenAt).getTime();
-      return elapsedMs < CREATOR_ONLINE_THRESHOLD_SECONDS * 1000;
+    if (!onlineStatusFallback) return false;
+    if (!lastSeenAt) return true;
+    const elapsedMs = Date.now() - new Date(lastSeenAt).getTime();
+    return elapsedMs < CREATOR_ONLINE_THRESHOLD_SECONDS * 1000;
+  }
+
+  async setOnline(userId: string): Promise<{ ok: true; isOnline: true; lastSeenAt: string }> {
+    const now = new Date().toISOString();
+
+    if (this.supabase.isConfigured) {
+      await this.assertCreator(userId);
+
+      const { data: updated, error } = await this.supabase
+        .getClient()
+        .from('creator_profiles')
+        .update({
+          last_seen_at: now,
+          online_status: true,
+          is_online: true,
+        })
+        .eq('user_id', userId)
+        .select('last_seen_at, is_online')
+        .maybeSingle();
+
+      if (error) throw new BadRequestException(error.message);
+      if (!updated) throw new ForbiddenException('Creator profile not found');
+
+      return {
+        ok: true,
+        isOnline: true,
+        lastSeenAt: (updated.last_seen_at as string) || now,
+      };
     }
-    return Boolean(onlineStatusFallback);
+
+    this.lastSeenByUserId.set(userId, now);
+    const mem = this.creators.find((c) => c.id === userId);
+    if (mem) mem.isOnline = true;
+    return { ok: true, isOnline: true, lastSeenAt: now };
+  }
+
+  async setOffline(userId: string): Promise<{ ok: true; isOnline: false; lastSeenAt: string }> {
+    const now = new Date().toISOString();
+
+    if (this.supabase.isConfigured) {
+      await this.assertCreator(userId);
+
+      const { data: updated, error } = await this.supabase
+        .getClient()
+        .from('creator_profiles')
+        .update({
+          last_seen_at: now,
+          online_status: false,
+          is_online: false,
+        })
+        .eq('user_id', userId)
+        .select('last_seen_at, is_online')
+        .maybeSingle();
+
+      if (error) throw new BadRequestException(error.message);
+      if (!updated) throw new ForbiddenException('Creator profile not found');
+
+      return {
+        ok: true,
+        isOnline: false,
+        lastSeenAt: (updated.last_seen_at as string) || now,
+      };
+    }
+
+    this.lastSeenByUserId.set(userId, now);
+    const mem = this.creators.find((c) => c.id === userId);
+    if (mem) mem.isOnline = false;
+    return { ok: true, isOnline: false, lastSeenAt: now };
   }
 
   async recordHeartbeat(userId: string): Promise<{ ok: true; lastSeenAt: string }> {
     const now = new Date().toISOString();
 
     if (this.supabase.isConfigured) {
-      const client = this.supabase.getClient();
+      await this.assertCreator(userId);
 
-      const { data: userRow, error: userErr } = await client
-        .from('users')
-        .select('is_creator')
-        .eq('id', userId)
+      const { data: profile, error: readErr } = await this.supabase
+        .getClient()
+        .from('creator_profiles')
+        .select('is_online')
+        .eq('user_id', userId)
         .maybeSingle();
 
-      if (userErr) {
-        throw new BadRequestException(userErr.message);
-      }
-      if (!userRow?.is_creator) {
-        throw new ForbiddenException('Only creators can send heartbeat');
+      if (readErr) throw new BadRequestException(readErr.message);
+      if (!profile?.is_online) {
+        throw new ForbiddenException('Creator is offline — heartbeat ignored');
       }
 
-      const { data: updated, error } = await client
+      const { data: updated, error } = await this.supabase
+        .getClient()
         .from('creator_profiles')
-        .update({ last_seen_at: now, online_status: true, is_online: true })
+        .update({ last_seen_at: now })
         .eq('user_id', userId)
+        .eq('is_online', true)
         .select('last_seen_at')
         .maybeSingle();
 
-      if (error) {
-        throw new BadRequestException(error.message);
-      }
-      if (!updated) {
-        throw new ForbiddenException('Creator profile not found');
-      }
+      if (error) throw new BadRequestException(error.message);
+      if (!updated) throw new ForbiddenException('Creator profile not found');
 
       return { ok: true, lastSeenAt: (updated.last_seen_at as string) || now };
     }
 
     this.lastSeenByUserId.set(userId, now);
     return { ok: true, lastSeenAt: now };
+  }
+
+  private async assertCreator(userId: string): Promise<void> {
+    const { data: userRow, error: userErr } = await this.supabase
+      .getClient()
+      .from('users')
+      .select('is_creator')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (userErr) throw new BadRequestException(userErr.message);
+    if (!userRow?.is_creator) {
+      throw new ForbiddenException('Only creators can update presence');
+    }
   }
 
   private async fetchActiveFromSupabase(): Promise<Creator[]> {

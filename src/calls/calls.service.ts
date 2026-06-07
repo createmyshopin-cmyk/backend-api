@@ -363,6 +363,10 @@ export class CallsService {
     const caller = await this.usersService.findOne(callerId);
     const creator = await this.creatorsService.findOne(dto.listenerId);
 
+    if (!creator.isOnline) {
+      throw new BadRequestException('Listener is currently offline');
+    }
+
     if (caller.coins < MIN_COINS_TO_CALL) {
       throw new BadRequestException(
         `Insufficient coins. You need at least ${MIN_COINS_TO_CALL} coins to start a call.`,
@@ -893,6 +897,7 @@ export class CallsService {
           })
           .eq('id', callId);
 
+        // Ensure this request never surfaces again as "incoming"
         await this.supabase
           .getClient()
           .from('call_requests')
