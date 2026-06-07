@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { LoginDto, RegisterDto } from './dto/auth.dto';
-import { UsersService } from '../users/users.service';
+import { UsersService, toPublicProfile } from '../users/users.service';
 import admin from './firebase-admin';
 
 function normalizePhone(phone: string): string {
@@ -157,7 +157,7 @@ export class AuthService {
     return {
       success: true,
       accessToken,
-      user,
+      user: toPublicProfile(user),
     };
   }
 }

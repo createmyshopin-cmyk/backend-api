@@ -64,6 +64,19 @@ export interface PublicUserProfile {
   creatorStatus: string;
 }
 
+function resolveOnboardingCompleted(user: User): boolean {
+  if (user.onboardingCompleted) return true;
+  const fullName = resolveDisplayName(
+    { full_name: user.fullName, name: user.name },
+    '',
+  );
+  return (
+    fullName.length >= 3 &&
+    Boolean(user.dateOfBirth) &&
+    (user.gender === 'male' || user.gender === 'female')
+  );
+}
+
 export function toPublicProfile(user: User): PublicUserProfile {
   const fullName = resolveDisplayName(
     { full_name: user.fullName, name: user.name },
@@ -75,7 +88,7 @@ export function toPublicProfile(user: User): PublicUserProfile {
     dateOfBirth: user.dateOfBirth,
     gender: user.gender,
     avatarUrl: user.avatarUrl,
-    onboardingCompleted: Boolean(user.onboardingCompleted),
+    onboardingCompleted: resolveOnboardingCompleted(user),
     name: fullName,
     phone: user.phone,
     email: user.email,
