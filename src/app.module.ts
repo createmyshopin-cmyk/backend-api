@@ -12,6 +12,7 @@ import { AgoraModule } from './agora/agora.module';
 import { FinanceModule } from './admin/finance/finance.module';
 import { AdminUsersModule } from './admin/users/admin-users.module';
 import { GiftModule } from './gifts/gift.module';
+import { HealthController } from './health.controller';
 
 @Module({
   imports: [
@@ -29,5 +30,6 @@ import { GiftModule } from './gifts/gift.module';
     AdminUsersModule,
     GiftModule,
   ],
+  controllers: [HealthController],
 })
 export class AppModule {}

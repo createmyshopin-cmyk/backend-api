@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import { ValidationPipe } from '@nestjs/common';
+import { RequestMethod, ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 
 async function bootstrap() {
@@ -15,8 +15,13 @@ async function bootstrap() {
       : undefined,
   );
 
-  // Prefix all routes with /api
-  app.setGlobalPrefix('api');
+  // Prefix API routes; keep root health probes outside /api for load balancers.
+  app.setGlobalPrefix('api', {
+    exclude: [
+      { path: '', method: RequestMethod.GET },
+      { path: 'health', method: RequestMethod.GET },
+    ],
+  });
 
   // Configure validation globally
   app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
@@ -34,8 +39,12 @@ async function bootstrap() {
     SwaggerModule.setup('docs', app, document);
   }
 
-  await app.listen(5000);
-  console.log(`Application is running on: http://localhost:5000/api`);
-  console.log(`Swagger documentation available at: http://localhost:5000/docs`);
+  const port = Number(process.env.PORT) || 5000;
+  await app.listen(port, '0.0.0.0');
+  console.log(`Application is running on: http://0.0.0.0:${port}/api`);
+  console.log(`Health check available at: http://0.0.0.0:${port}/health`);
+  if (!isProd || process.env.ENABLE_SWAGGER === 'true') {
+    console.log(`Swagger documentation available at: http://0.0.0.0:${port}/docs`);
+  }
 }
 bootstrap();
