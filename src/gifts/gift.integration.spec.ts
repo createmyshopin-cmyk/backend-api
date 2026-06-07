@@ -2,6 +2,7 @@
  * Integration tests for gift RPC + repository (requires Supabase env).
  * Skipped when SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are not set.
  */
+import { randomUUID } from 'crypto';
 import { createClient } from '@supabase/supabase-js';
 
 const url = process.env.SUPABASE_URL?.trim();
@@ -66,10 +67,11 @@ describeIf('Gift system integration (Supabase)', () => {
       p_creator_user_id: fakeCreator,
       p_gift_id: gift?.id,
       p_call_id: fakeCall,
-      p_idempotency_key: `test-insufficient-${Date.now()}`,
+      p_idempotency_key: randomUUID(),
     });
 
     expect(error).not.toBeNull();
     expect(error?.message).toMatch(/sender_not_found|insufficient_balance|call_not_found/);
   });
 });
+
