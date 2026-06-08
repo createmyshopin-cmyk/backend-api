@@ -6,7 +6,7 @@ import httpx
 import jwt
 import pytest
 
-from conftest import API_BASE, JWT_SECRET, mint_token
+from conftest import API_BASE, JWT_SECRET, assert_rpc_denied_for_client, mint_token
 
 
 class TestAuthentication:
@@ -133,7 +133,7 @@ class TestIdempotency:
 
 
 class TestSupabaseRpcExposure:
-  """CRITICAL: send_gift must NOT be callable via anon/authenticated PostgREST."""
+    """CRITICAL: send_gift must NOT be callable via anon/authenticated PostgREST."""
 
     @pytest.mark.skipif(
         not __import__("os").environ.get("SUPABASE_URL"),
@@ -148,7 +148,8 @@ class TestSupabaseRpcExposure:
             pytest.skip("SUPABASE_ANON_KEY not set")
 
         client = create_client(os.environ["SUPABASE_URL"], anon_key)
-        result = client.rpc(
+        assert_rpc_denied_for_client(
+            client,
             "send_gift",
             {
                 "p_sender_user_id": str(uuid.uuid4()),
@@ -157,5 +158,4 @@ class TestSupabaseRpcExposure:
                 "p_call_id": str(uuid.uuid4()),
                 "p_idempotency_key": str(uuid.uuid4()),
             },
-        ).execute()
-        assert result.data is None, "anon must not execute send_gift via PostgREST"
+        )

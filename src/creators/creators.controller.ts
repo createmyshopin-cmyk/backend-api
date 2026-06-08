@@ -99,6 +99,14 @@ export class CreatorsController {
     return this.creatorsService.recordHeartbeat(req.user.id);
   }
 
+  @Get('me')
+  @ApiOperation({ summary: 'Get authenticated creator profile (JWT user)' })
+  @ApiResponse({ status: 200, description: 'Creator profile for signed-in user.' })
+  @ApiResponse({ status: 404, description: 'Creator profile not found.' })
+  getMyProfile(@Request() req: { user: { id: string } }) {
+    return this.creatorsService.findMe(req.user.id);
+  }
+
   @Get('earnings-history')
   @ApiOperation({ summary: 'Get current creator earnings history' })
   @ApiResponse({ status: 200, description: 'Earnings history list.' })

@@ -5,6 +5,8 @@ import uuid
 
 import pytest
 
+from conftest import assert_rpc_callable_by_service_role, assert_rpc_denied_for_client
+
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -35,8 +37,7 @@ def test_anon_cannot_execute_locked_rpc(rpc_name: str, payload: dict):
     from supabase import create_client
 
     client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
-    result = client.rpc(rpc_name, payload).execute()
-    assert result.data is None
+    assert_rpc_denied_for_client(client, rpc_name, payload)
 
 
 @pytest.mark.skipif(
@@ -47,7 +48,8 @@ def test_service_role_can_execute_send_gift_shape():
     from supabase import create_client
 
     client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-    result = client.rpc(
+    assert_rpc_callable_by_service_role(
+        client,
         "send_gift",
         {
             "p_sender_user_id": str(uuid.uuid4()),
@@ -56,6 +58,4 @@ def test_service_role_can_execute_send_gift_shape():
             "p_call_id": str(uuid.uuid4()),
             "p_idempotency_key": str(uuid.uuid4()),
         },
-    ).execute()
-    # Callable; fails validation (not permission)
-    assert result is not None
+    )

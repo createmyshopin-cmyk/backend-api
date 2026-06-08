@@ -5,6 +5,8 @@ import uuid
 
 import pytest
 
+from conftest import assert_rpc_denied_for_client
+
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
@@ -16,7 +18,8 @@ class TestRpcPrivileges:
         from supabase import create_client
 
         client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
-        result = client.rpc(
+        assert_rpc_denied_for_client(
+            client,
             "send_gift",
             {
                 "p_sender_user_id": str(uuid.uuid4()),
@@ -25,16 +28,13 @@ class TestRpcPrivileges:
                 "p_call_id": str(uuid.uuid4()),
                 "p_idempotency_key": str(uuid.uuid4()),
             },
-        ).execute()
-        assert result.data is None
-        assert result is not None
+        )
 
     def test_anon_cannot_execute_gift_analytics(self):
         from supabase import create_client
 
         client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
-        result = client.rpc("gift_analytics_summary").execute()
-        assert result.data is None
+        assert_rpc_denied_for_client(client, "gift_analytics_summary")
 
 
 @pytest.mark.skipif(not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY, reason="Service role not set")

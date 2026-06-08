@@ -64,3 +64,25 @@ def forged_token():
 @pytest.fixture
 def idempotency_key():
     return str(uuid.uuid4())
+
+
+def assert_rpc_denied_for_client(client, rpc_name: str, payload: dict | None = None) -> None:
+    """PostgREST must reject anon/authenticated RPC calls (42501 permission denied)."""
+    from postgrest.exceptions import APIError
+
+    try:
+        client.rpc(rpc_name, payload or {}).execute()
+        pytest.fail(f"Expected permission denied for RPC {rpc_name}")
+    except APIError as exc:
+        assert exc.code == "42501", f"Expected 42501, got {exc.code}: {exc}"
+
+
+def assert_rpc_callable_by_service_role(client, rpc_name: str, payload: dict) -> None:
+    """Service role may invoke RPC; business validation errors prove EXECUTE is granted."""
+    from postgrest.exceptions import APIError
+
+    try:
+        client.rpc(rpc_name, payload).execute()
+    except APIError as exc:
+        # Permission denied would be a security failure; validation errors are expected.
+        assert exc.code != "42501", f"service_role blocked from {rpc_name}: {exc}"

@@ -6,7 +6,7 @@ import httpx
 import jwt
 import pytest
 
-from conftest import API_BASE, JWT_SECRET, mint_token
+from conftest import API_BASE, JWT_SECRET, assert_rpc_denied_for_client, mint_token
 
 VALID_IDEM = str(uuid.uuid4())
 
@@ -109,7 +109,8 @@ class TestRpcLockdown:
         from supabase import create_client
 
         client = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_ANON_KEY"])
-        result = client.rpc(
+        assert_rpc_denied_for_client(
+            client,
             "send_gift",
             {
                 "p_sender_user_id": str(uuid.uuid4()),
@@ -118,5 +119,4 @@ class TestRpcLockdown:
                 "p_call_id": str(uuid.uuid4()),
                 "p_idempotency_key": str(uuid.uuid4()),
             },
-        ).execute()
-        assert result.data is None or getattr(result, "error", None) is not None
+        )

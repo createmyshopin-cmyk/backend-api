@@ -405,11 +405,143 @@ export class CreatorsService {
     return this.creators.filter((c) => c.status === 'rejected');
   }
 
+  private mapUserProfileRow(
+    row: Record<string, unknown>,
+    cp: Record<string, unknown>,
+  ): Creator {
+    const languagesRaw = (cp.languages as string) || '';
+    const languages = languagesRaw
+      ? languagesRaw.split(',').map((l) => l.trim()).filter(Boolean)
+      : ['English'];
+    const createdAt = row.created_at as string | undefined;
+    const userId = row.id as string;
+    const displayName = resolveDisplayName(
+      { full_name: row.full_name as string | null, name: row.name as string | null },
+      'Creator',
+    );
+
+    return {
+      id: userId,
+      name: displayName,
+      phone: (row.phone as string) || '',
+      email: (row.email as string) || '',
+      bio: (cp.bio as string) || '',
+      languages,
+      gender: (row.gender as string) || 'Female',
+      experience: (cp.experience as string) || '',
+      status: (row.status as string) === 'suspended' ? 'suspended' : 'active',
+      rating: Number(cp.rating) || 0,
+      completedCalls: Number(cp.total_calls) || 0,
+      revenueGenerated: Number(cp.total_earnings) || 0,
+      ratePerMinute: Number(cp.price_per_minute) || 10,
+      lastSeenAt:
+        (cp.last_seen_at as string) || this.lastSeenByUserId.get(userId),
+      isOnline: this.computeIsOnline(
+        (cp.last_seen_at as string) || this.lastSeenByUserId.get(userId),
+        Boolean(cp.is_online ?? cp.online_status),
+      ),
+      profileImage:
+        (row.profile_image as string) ||
+        `https://i.pravatar.cc/150?u=${displayName}`,
+      createdAt,
+      isNew: this.isRecentlyJoined(createdAt),
+    };
+  }
+
+  private async fetchOneFromSupabase(userId: string): Promise<Creator | null> {
+    const client = this.supabase.getClient();
+
+    const { data: userRow, error: userErr } = await client
+      .from('users')
+      .select(`
+        id,
+        name,
+        full_name,
+        email,
+        phone,
+        gender,
+        profile_image,
+        status,
+        created_at,
+        creator_profiles!inner (
+          bio,
+          languages,
+          experience,
+          price_per_minute,
+          rating,
+          total_calls,
+          total_earnings,
+          online_status,
+          is_online,
+          last_seen_at
+        )
+      `)
+      .eq('id', userId)
+      .eq('is_creator', true)
+      .maybeSingle();
+
+    if (!userErr && userRow) {
+      const row = userRow as Record<string, unknown>;
+      const profile = row.creator_profiles as
+        | Record<string, unknown>
+        | Record<string, unknown>[];
+      const cp = Array.isArray(profile) ? profile[0] : profile;
+      if (cp) return this.mapUserProfileRow(row, cp);
+    }
+
+    const { data: profileRow, error: profileErr } = await client
+      .from('creator_profiles')
+      .select(`
+        bio,
+        languages,
+        experience,
+        price_per_minute,
+        rating,
+        total_calls,
+        total_earnings,
+        online_status,
+        is_online,
+        last_seen_at,
+        users!inner (
+          id,
+          name,
+          full_name,
+          email,
+          phone,
+          gender,
+          profile_image,
+          status,
+          created_at
+        )
+      `)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (profileErr || !profileRow) {
+      if (userErr) {
+        console.warn(
+          `[Creators] fetchOneFromSupabase userId=${userId} userErr=${userErr.message}`,
+        );
+      }
+      return null;
+    }
+
+    const cp = profileRow as Record<string, unknown>;
+    const users = cp.users as Record<string, unknown> | Record<string, unknown>[];
+    const row = Array.isArray(users) ? users[0] : users;
+    if (!row) return null;
+    return this.mapUserProfileRow(row, cp);
+  }
+
+  async findMe(userId: string) {
+    const creator = await this.findOne(userId);
+    return this.mapToDto(creator);
+  }
+
   async findOne(id: string) {
     if (this.supabase.isConfigured) {
       try {
-        const active = await this.fetchActiveFromSupabase();
-        const match = active.find((c) => c.id === id);
+        const match = await this.fetchOneFromSupabase(id);
         if (match) return match;
       } catch {
         // fall through to in-memory

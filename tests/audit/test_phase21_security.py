@@ -47,7 +47,8 @@ class TestCallEndHardening:
             headers={"Authorization": f"Bearer {attacker}"},
             json={"duration": 60},
         )
-        assert r.status_code in (403, 404)
+        # 401 when JWT userId is unknown; 403/404 when known but not a participant
+        assert r.status_code in (401, 403, 404)
 
 
 class TestAdminRegisterHardening:

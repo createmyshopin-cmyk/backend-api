@@ -34,6 +34,14 @@ export class CallsController {
 
   // ── Monitoring (admin) ──────────────────────────────────────────────────────
 
+  @Get('active/me')
+  @ApiOperation({ summary: "Get the authenticated user's active call session" })
+  @ApiResponse({ status: 200, description: 'Active call or null when none.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  getMyActiveCall(@Request() req: { user: { id: string } }) {
+    return this.callsService.getActiveCallForUser(req.user.id);
+  }
+
   @Get('active')
   @UseGuards(AdminGuard)
   @ApiOperation({ summary: 'Get live active call sessions (admin)' })
@@ -204,5 +212,17 @@ export class CallsController {
     @Body() dto: EndCallDto,
   ) {
     return this.callsService.endCall(req.user.id, id, dto);
+  }
+
+  @Get(':id/summary')
+  @ApiOperation({ summary: 'Authoritative call-end summary for a session' })
+  @ApiResponse({ status: 200, description: 'Call summary with coin totals.' })
+  @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 404, description: 'Call session not found.' })
+  getCallSummary(
+    @Request() req: { user: { id: string } },
+    @Param('id') id: string,
+  ) {
+    return this.callsService.getCallSummary(req.user.id, id);
   }
 }

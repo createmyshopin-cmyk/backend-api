@@ -22,6 +22,11 @@ import {
   CallRequestStatus,
   TERMINAL_CALL_STATUSES,
 } from './call-status.constants';
+import {
+  buildCallEndSummary,
+  computeCallCoins,
+  type CallEndSummary,
+} from './call-summary';
 
 // ─── Domain model ───────────────────────────────────────────────────────────
 
@@ -59,11 +64,7 @@ export interface CallRequestRecord {
 /** Minimum coin balance required to start a call */
 const MIN_COINS_TO_CALL = 10;
 
-/** Compute coins to deduct: ceil(seconds / 60) × ratePerMinute */
-function computeCoins(durationSeconds: number, ratePerMinute: number): number {
-  const minutes = Math.ceil(durationSeconds / 60);
-  return Math.max(1, minutes) * ratePerMinute;
-}
+const computeCoins = computeCallCoins;
 
 // ─── Row → domain mapping ────────────────────────────────────────────────────
 
@@ -249,6 +250,87 @@ export class CallsService {
     return this.memCalls.filter((c) => ACTIVE_CALL_STATUSES.includes(c.status));
   }
 
+  /** Active call for the signed-in caller or creator (resume / cold-start recovery). */
+  async getActiveCallForUser(userId: string) {
+    let session: CallSession | undefined;
+
+    if (this.supabase.isConfigured) {
+      try {
+        const { data, error } = await this.supabase
+          .getClient()
+          .from('calls')
+          .select('*')
+          .or(`caller_id.eq.${userId},creator_id.eq.${userId}`)
+          .in('status', ACTIVE_CALL_STATUSES)
+          .order('started_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (!error && data) {
+          session = rowToSession(data as Record<string, unknown>);
+        } else if (error) {
+          console.warn('CallsService.getActiveCallForUser error:', error.message);
+        }
+      } catch (e) {
+        console.warn(
+          'CallsService.getActiveCallForUser exception:',
+          (e as Error).message,
+        );
+      }
+    }
+
+    if (!session) {
+      session = this.memCalls.find(
+        (c) =>
+          ACTIVE_CALL_STATUSES.includes(c.status) &&
+          (c.callerId === userId || c.creatorId === userId),
+      );
+    }
+
+    if (!session) {
+      return { success: true, callSession: null, userId };
+    }
+
+    const isCreator = session.creatorId === userId;
+    let peerName = isCreator ? session.callerName : session.creatorName;
+    let peerAvatar = `https://i.pravatar.cc/150?u=${isCreator ? session.callerId : session.creatorId}`;
+    let coinsPerMinute = 10;
+
+    try {
+      if (isCreator) {
+        const caller = await this.usersService.findOne(session.callerId);
+        peerName = caller.name;
+        peerAvatar =
+          (caller as { profileImage?: string }).profileImage ?? peerAvatar;
+      } else {
+        const creator = await this.creatorsService.findOne(session.creatorId);
+        peerName = creator.name;
+        peerAvatar =
+          (creator as { profileImage?: string }).profileImage ?? peerAvatar;
+        coinsPerMinute = creator.ratePerMinute ?? 10;
+      }
+    } catch (e) {
+      console.warn('getActiveCallForUser enrich error:', (e as Error).message);
+    }
+
+    const channelName = session.channelName;
+    const token = this._requireAgoraToken(channelName);
+    const appId = process.env.AGORA_APP_ID?.trim() ?? '';
+
+    return {
+      success: true,
+      userId,
+      callSession: session,
+      channelName,
+      peerName,
+      peerAvatar,
+      coinsPerMinute,
+      agoraToken: token,
+      agoraAppId: appId,
+      isCreator,
+    };
+  }
+
   /** Auto-close ring requests that were never answered (prevents repeat incoming UI). */
   private async expireStaleCallRequests(): Promise<void> {
     if (!this.supabase.isConfigured) return;
@@ -346,7 +428,7 @@ export class CallsService {
         callRequest: record,
         callSession: session,
         channelName,
-        agoraToken: this._makeAgoraToken(channelName),
+        agoraToken: this._requireAgoraToken(channelName),
         agoraAppId: process.env.AGORA_APP_ID ?? '',
       };
     }
@@ -416,7 +498,7 @@ export class CallsService {
               callerAvatar,
               channelName,
               callRequestId: record.id,
-              agoraToken: this._makeAgoraToken(channelName),
+              agoraToken: this._requireAgoraToken(channelName),
               agoraAppId: process.env.AGORA_APP_ID ?? '',
               callType: dto.type,
             });
@@ -428,7 +510,7 @@ export class CallsService {
           status: 'requested' as const,
           callRequest: record,
           channelName,
-          agoraToken: this._makeAgoraToken(channelName),
+          agoraToken: this._requireAgoraToken(channelName),
           agoraAppId: process.env.AGORA_APP_ID ?? '',
         };
       } catch (e) {
@@ -455,7 +537,7 @@ export class CallsService {
       status: 'requested' as const,
       callRequest: record,
       channelName,
-      agoraToken: this._makeAgoraToken(channelName),
+          agoraToken: this._requireAgoraToken(channelName),
       agoraAppId: process.env.AGORA_APP_ID ?? '',
     };
   }
@@ -537,7 +619,7 @@ export class CallsService {
           callRequestId: dto.callId,
           callSession: session,
           channelName,
-          agoraToken: this._makeAgoraToken(channelName),
+          agoraToken: this._requireAgoraToken(channelName),
           agoraAppId: process.env.AGORA_APP_ID ?? '',
         };
       } catch (e) {
@@ -578,7 +660,7 @@ export class CallsService {
       callRequestId: dto.callId,
       callSession: session,
       channelName,
-      agoraToken: this._makeAgoraToken(channelName),
+          agoraToken: this._requireAgoraToken(channelName),
       agoraAppId: process.env.AGORA_APP_ID ?? '',
     };
   }
@@ -786,6 +868,12 @@ export class CallsService {
       );
     }
 
+    const role = dto.role ?? 'publisher';
+    const tokenPreview = token.length > 20 ? token.slice(0, 20) : token;
+    console.info(
+      `[AgoraToken] CALL_ID=${dto.callId ?? 'null'} CHANNEL_NAME=${channelName} UID=${uid} ROLE=${role} TOKEN_CREATED=${tokenPreview}…`,
+    );
+
     return { token, appId, channelName, uid, expiresAt };
   }
 
@@ -820,6 +908,8 @@ export class CallsService {
           if (userId === callerId || userId === creatorId) return;
           throw new ForbiddenException('You are not a participant in this call');
         }
+
+        throw new NotFoundException(`Call session ${callId} not found`);
       }
 
       const { data: callRow } = await client
@@ -849,6 +939,21 @@ export class CallsService {
       throw new ForbiddenException('No active call found for this channel');
     }
 
+    if (callId) {
+      const memById = this.memCalls.find((c) => c.id === callId);
+      if (memById) {
+        if (!ACTIVE_CALL_STATUSES.includes(memById.status)) {
+          throw new BadRequestException('Call session is not active');
+        }
+        if (memById.channelName !== channelName) {
+          throw new ForbiddenException('Channel does not match call session');
+        }
+        if (memById.callerId === userId || memById.creatorId === userId) return;
+        throw new ForbiddenException('You are not a participant in this call');
+      }
+      throw new NotFoundException(`Call session ${callId} not found`);
+    }
+
     const memCall = this.memCalls.find(
       (c) =>
         c.channelName === channelName &&
@@ -868,14 +973,28 @@ export class CallsService {
     throw new ForbiddenException('No active call found for this channel');
   }
 
-  /**
-   * Internal helper — generates a real Agora token when credentials are
-   * available, otherwise falls back to AGORA_TOKEN env var (dev mode).
-   */
+  private _requireAgoraToken(channelName: string, uid = 0): string {
+    const token = this._makeAgoraToken(channelName, uid);
+    if (!token) {
+      throw new InternalServerErrorException(
+        'Agora token unavailable. Set AGORA_APP_CERTIFICATE in .env (enable Primary certificate in Agora Console), or for local dev only set AGORA_TOKEN from Console → your project → Generate temp token.',
+      );
+    }
+    return token;
+  }
+
   private _makeAgoraToken(channelName: string, uid = 0): string {
-    const appId = process.env.AGORA_APP_ID;
-    const appCertificate = process.env.AGORA_APP_CERTIFICATE;
-    if (!appId || !appCertificate) return process.env.AGORA_TOKEN ?? '';
+    const appId = process.env.AGORA_APP_ID?.trim();
+    const appCertificate = process.env.AGORA_APP_CERTIFICATE?.trim();
+    if (!appId || !appCertificate) {
+      const fallback = process.env.AGORA_TOKEN?.trim() ?? '';
+      if (fallback) {
+        console.warn(
+          `[Agora] Using AGORA_TOKEN fallback for channel ${channelName} — token may not match dynamic channels.`,
+        );
+      }
+      return fallback;
+    }
     try {
       const expiresAt = Math.floor(Date.now() / 1000) + 3600;
       return RtcTokenBuilder.buildTokenWithUid(
@@ -884,7 +1003,7 @@ export class CallsService {
       );
     } catch (e) {
       console.warn('[Agora] token generation failed:', (e as Error).message);
-      return process.env.AGORA_TOKEN ?? '';
+      return process.env.AGORA_TOKEN?.trim() ?? '';
     }
   }
 
@@ -939,6 +1058,121 @@ export class CallsService {
     };
   }
 
+  // ─── Call summary (source of truth for end-of-call UI) ─────────────────────
+
+  async getCallSummary(userId: string, callId: string): Promise<CallEndSummary> {
+    const row = await this.fetchCallRow(callId);
+    const callerId = row.caller_id as string;
+    const creatorId = row.creator_id as string;
+    if (userId !== callerId && userId !== creatorId) {
+      throw new ForbiddenException('Only call participants can view this summary');
+    }
+    return this.assembleCallEndSummary(row, userId);
+  }
+
+  private async fetchCallRow(callId: string): Promise<Record<string, unknown>> {
+    if (this.supabase.isConfigured) {
+      const { data, error } = await this.supabase
+        .getClient()
+        .from('calls')
+        .select('*')
+        .eq('id', callId)
+        .single();
+
+      if (error) {
+        if (error.code === 'PGRST116') {
+          throw new NotFoundException(`Call session ${callId} not found`);
+        }
+        throw new InternalServerErrorException(error.message);
+      }
+      return data as Record<string, unknown>;
+    }
+
+    const mem = this.memCalls.find((c) => c.id === callId);
+    if (!mem) throw new NotFoundException(`Call session ${callId} not found`);
+    return {
+      id: mem.id,
+      caller_id: mem.callerId,
+      creator_id: mem.creatorId,
+      duration_seconds: mem.durationSeconds,
+      coins_spent: mem.coinsSpent,
+      coins_deducted: mem.coinsDeducted,
+      status: mem.status,
+      started_at: mem.startedAt,
+    };
+  }
+
+  private async fetchGiftTotalsForCall(callId: string): Promise<{
+    giftCoinsSpent: number;
+    creatorGiftEarnings: number;
+  }> {
+    if (!this.supabase.isConfigured) {
+      return { giftCoinsSpent: 0, creatorGiftEarnings: 0 };
+    }
+
+    const { data, error } = await this.supabase
+      .getClient()
+      .from('gift_transactions')
+      .select('coins_spent, creator_coins')
+      .eq('call_id', callId);
+
+    if (error || !data?.length) {
+      return { giftCoinsSpent: 0, creatorGiftEarnings: 0 };
+    }
+
+    let giftCoinsSpent = 0;
+    let creatorGiftEarnings = 0;
+    for (const row of data as Record<string, unknown>[]) {
+      giftCoinsSpent += Number(row.coins_spent ?? 0);
+      creatorGiftEarnings += Number(row.creator_coins ?? 0);
+    }
+    return { giftCoinsSpent, creatorGiftEarnings };
+  }
+
+  private async fetchCreatorCallEarnings(callId: string): Promise<number> {
+    if (!this.supabase.isConfigured) return 0;
+
+    const { data } = await this.supabase
+      .getClient()
+      .from('creator_earnings')
+      .select('creator_share')
+      .eq('call_id', callId)
+      .maybeSingle();
+
+    return Number((data as Record<string, unknown> | null)?.creator_share ?? 0);
+  }
+
+  private async assembleCallEndSummary(
+    row: Record<string, unknown>,
+    viewerUserId: string,
+  ): Promise<CallEndSummary> {
+    const callId = row.id as string;
+    const callerId = row.caller_id as string;
+    const callDuration = Number(row.duration_seconds ?? 0);
+    const callCoinsSpent = Number(row.coins_spent ?? row.coins_deducted ?? 0);
+    const giftTotals = await this.fetchGiftTotalsForCall(callId);
+    const creatorCallEarnings = await this.fetchCreatorCallEarnings(callId);
+
+    let remainingBalance: number | undefined;
+    if (viewerUserId === callerId) {
+      try {
+        const caller = await this.usersService.findOne(callerId);
+        remainingBalance = caller.coins;
+      } catch {
+        /* optional */
+      }
+    }
+
+    return buildCallEndSummary({
+      callDuration,
+      callCoinsSpent,
+      giftCoinsSpent: giftTotals.giftCoinsSpent,
+      creatorCallEarnings,
+      creatorGiftEarnings: giftTotals.creatorGiftEarnings,
+      remainingBalance,
+    });
+  }
+
   // ─── End a call ─────────────────────────────────────────────────────────────
 
   async endCall(userId: string, callId: string, dto: EndCallDto) {
@@ -968,8 +1202,21 @@ export class CallsService {
           throw new ForbiddenException('Only call participants can end this session');
         }
 
-        if (!ACTIVE_CALL_STATUSES.includes(normalizeCallStatus(row.status as string))) {
-          throw new BadRequestException('Call session has already ended');
+        const callStatus = normalizeCallStatus(row.status as string);
+        if (!ACTIVE_CALL_STATUSES.includes(callStatus)) {
+          const fullRow = await this.fetchCallRow(callId);
+          const summary = await this.assembleCallEndSummary(fullRow, userId);
+          const session = rowToSession(fullRow);
+          return {
+            message: 'Call already ended.',
+            alreadyEnded: true,
+            callSession: session,
+            callRequestStatus: 'accepted' as const,
+            coinsDeducted: summary.callCoinsSpent,
+            coinsSpent: summary.callCoinsSpent,
+            newBalance: summary.remainingBalance,
+            ...summary,
+          };
         }
 
         const caller = await this.usersService.findOne(callerId);
@@ -1049,19 +1296,35 @@ export class CallsService {
         const memReq = this.memCallRequests.find((r) => r.callId === callId);
         if (memReq) memReq.status = 'accepted';
 
+        const endedRow = {
+          ...row,
+          status: 'ended',
+          ended_at: endedAt,
+          duration_seconds: durationSeconds,
+          coins_spent: coinsSpent,
+          coins_deducted: coinsSpent,
+        };
+        const summary = await this.assembleCallEndSummary(endedRow, userId);
+        if (newBalance != null) {
+          summary.remainingBalance = newBalance;
+        }
+
         return {
           message: 'Call ended. Coins deducted successfully.',
+          alreadyEnded: false,
           callSession: session,
           callRequestStatus: 'accepted' as const,
           coinsDeducted: coinsSpent,
           coinsSpent,
           newBalance,
+          ...summary,
         };
       } catch (e) {
         if (
           e instanceof NotFoundException ||
           e instanceof BadRequestException ||
-          e instanceof InternalServerErrorException
+          e instanceof InternalServerErrorException ||
+          e instanceof ForbiddenException
         ) {
           throw e;
         }
@@ -1075,7 +1338,29 @@ export class CallsService {
       throw new ForbiddenException('Only call participants can end this session');
     }
     if (!ACTIVE_CALL_STATUSES.includes(mem.status)) {
-      throw new BadRequestException('Call session has already ended');
+      const summary = await this.assembleCallEndSummary(
+        {
+          id: mem.id,
+          caller_id: mem.callerId,
+          creator_id: mem.creatorId,
+          duration_seconds: mem.durationSeconds,
+          coins_spent: mem.coinsSpent,
+          coins_deducted: mem.coinsDeducted,
+          status: mem.status,
+          started_at: mem.startedAt,
+        },
+        userId,
+      );
+      return {
+        message: 'Call already ended.',
+        alreadyEnded: true,
+        callSession: mem,
+        callRequestStatus: 'accepted' as const,
+        coinsDeducted: summary.callCoinsSpent,
+        coinsSpent: summary.callCoinsSpent,
+        newBalance: summary.remainingBalance,
+        ...summary,
+      };
     }
 
     const caller = await this.usersService.findOne(mem.callerId);
@@ -1116,13 +1401,32 @@ export class CallsService {
     }
 
 
+    const summary = await this.assembleCallEndSummary(
+      {
+        id: mem.id,
+        caller_id: mem.callerId,
+        creator_id: mem.creatorId,
+        duration_seconds: mem.durationSeconds,
+        coins_spent: mem.coinsSpent,
+        coins_deducted: mem.coinsDeducted,
+        status: mem.status,
+        started_at: mem.startedAt,
+      },
+      userId,
+    );
+    if (newBalance != null) {
+      summary.remainingBalance = newBalance;
+    }
+
     return {
       message: 'Call ended. Coins deducted successfully.',
+      alreadyEnded: false,
       callSession: mem,
       callRequestStatus: 'accepted' as const,
       coinsDeducted: coinsSpent,
       coinsSpent,
       newBalance,
+      ...summary,
     };
   }
 
