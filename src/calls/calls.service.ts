@@ -159,45 +159,45 @@ export class CallsService {
     private readonly coinTransactions: CoinTransactionsService,
   ) {}
 
-  private notifyCreatorCallCancelled(
+  private async notifyPeerCallCancelled(
+    cancelledByUserId: string,
+    callerId: string,
     creatorId: string,
     callRequestId: string,
-  ): void {
-    this.usersService
-      .findOne(creatorId)
-      .then((creator) => {
-        if (!creator.fcm_token) return;
-        return this.fcmService.sendCallCancelled({
-          fcmToken: creator.fcm_token,
-          callRequestId,
-        });
-      })
-      .catch((e) =>
-        console.warn('[FCM] call cancelled notify error:', (e as Error).message),
-      );
+  ): Promise<void> {
+    const peerId =
+      cancelledByUserId === callerId ? creatorId : callerId;
+    try {
+      const peer = await this.usersService.findOne(peerId);
+      if (!peer.fcm_token) return;
+      await this.fcmService.sendCallCancelled({
+        fcmToken: peer.fcm_token,
+        callRequestId,
+      });
+    } catch (e) {
+      console.warn('[FCM] call cancelled notify error:', (e as Error).message);
+    }
   }
 
-  private notifyPeerCallEnded(
+  private async notifyPeerCallEnded(
     endedByUserId: string,
     callerId: string,
     creatorId: string,
     callSessionId: string,
     callRequestId?: string,
-  ): void {
+  ): Promise<void> {
     const peerId = endedByUserId === callerId ? creatorId : callerId;
-    this.usersService
-      .findOne(peerId)
-      .then((peer) => {
-        if (!peer.fcm_token) return;
-        return this.fcmService.sendCallEnded({
-          fcmToken: peer.fcm_token,
-          callSessionId,
-          callRequestId,
-        });
-      })
-      .catch((e) =>
-        console.warn('[FCM] call ended notify error:', (e as Error).message),
-      );
+    try {
+      const peer = await this.usersService.findOne(peerId);
+      if (!peer.fcm_token) return;
+      await this.fcmService.sendCallEnded({
+        fcmToken: peer.fcm_token,
+        callSessionId,
+        callRequestId,
+      });
+    } catch (e) {
+      console.warn('[FCM] call ended notify error:', (e as Error).message);
+    }
   }
 
   // ─── Query ──────────────────────────────────────────────────────────────────
@@ -372,6 +372,133 @@ export class CallsService {
     };
   }
 
+  private async creatorHasBlockingCallState(creatorId: string): Promise<boolean> {
+    if (this.supabase.isConfigured) {
+      const client = this.supabase.getClient();
+      const { data: pending } = await client
+        .from('call_requests')
+        .select('id')
+        .eq('creator_id', creatorId)
+        .eq('status', 'requested')
+        .is('call_id', null)
+        .limit(1);
+      if (pending?.length) return true;
+
+      const { data: active } = await client
+        .from('calls')
+        .select('id')
+        .eq('creator_id', creatorId)
+        .in('status', ACTIVE_CALL_STATUSES)
+        .limit(1);
+      return (active?.length ?? 0) > 0;
+    }
+
+    if (
+      this.memCallRequests.some(
+        (r) => r.creatorId === creatorId && r.status === 'requested',
+      )
+    ) {
+      return true;
+    }
+    return this.memCalls.some(
+      (c) =>
+        c.creatorId === creatorId && ACTIVE_CALL_STATUSES.includes(c.status),
+    );
+  }
+
+  private async callerHasBlockingCallState(callerId: string): Promise<boolean> {
+    if (this.supabase.isConfigured) {
+      const client = this.supabase.getClient();
+      const { data: pending } = await client
+        .from('call_requests')
+        .select('id')
+        .eq('caller_id', callerId)
+        .eq('status', 'requested')
+        .is('call_id', null)
+        .limit(1);
+      if (pending?.length) return true;
+
+      const { data: active } = await client
+        .from('calls')
+        .select('id')
+        .eq('caller_id', callerId)
+        .in('status', ACTIVE_CALL_STATUSES)
+        .limit(1);
+      return (active?.length ?? 0) > 0;
+    }
+
+    if (
+      this.memCallRequests.some(
+        (r) => r.callerId === callerId && r.status === 'requested',
+      )
+    ) {
+      return true;
+    }
+    return this.memCalls.some(
+      (c) =>
+        c.callerId === callerId && ACTIVE_CALL_STATUSES.includes(c.status),
+    );
+  }
+
+  private async cancelOtherPendingRequestsForCreator(
+    creatorId: string,
+    keepRequestId: string,
+  ): Promise<void> {
+    if (this.supabase.isConfigured) {
+      try {
+        const { data, error } = await this.supabase
+          .getClient()
+          .from('call_requests')
+          .select('id, caller_id')
+          .eq('creator_id', creatorId)
+          .eq('status', 'requested')
+          .is('call_id', null)
+          .neq('id', keepRequestId);
+
+        if (error || !data?.length) return;
+
+        for (const row of data as Record<string, unknown>[]) {
+          const requestId = row.id as string;
+          const callerId = row.caller_id as string;
+          await this.supabase
+            .getClient()
+            .from('call_requests')
+            .update({ status: 'cancelled' })
+            .eq('id', requestId);
+          const mem = this.memCallRequests.find((r) => r.id === requestId);
+          if (mem) mem.status = 'cancelled';
+          await this.notifyPeerCallCancelled(
+            creatorId,
+            callerId,
+            creatorId,
+            requestId,
+          );
+        }
+      } catch (e) {
+        console.warn(
+          'cancelOtherPendingRequestsForCreator:',
+          (e as Error).message,
+        );
+      }
+      return;
+    }
+
+    for (const req of this.memCallRequests.filter(
+      (r) =>
+        r.creatorId === creatorId &&
+        r.status === 'requested' &&
+        r.id !== keepRequestId,
+    )) {
+      req.status = 'cancelled';
+      await this.notifyPeerCallCancelled(
+        creatorId,
+        req.callerId,
+        creatorId,
+        req.id,
+      );
+    }
+  }
+
   /** Auto-close ring requests that were never answered (prevents repeat incoming UI). */
   private async expireStaleCallRequests(): Promise<void> {
     if (!this.supabase.isConfigured) return;
@@ -400,7 +527,9 @@ export class CallsService {
           .select('id, caller_id, creator_id, type, status, created_at')
           .eq('creator_id', creatorUserId)
           .eq('status', 'requested')
-          .order('created_at', { ascending: true });
+          .is('call_id', null)
+          .order('created_at', { ascending: true })
+          .limit(1);
 
         if (!error && data?.length) {
           const rows = data as Record<string, unknown>[];
@@ -439,9 +568,14 @@ export class CallsService {
       }
     }
 
-    const pending = this.memCallRequests.filter(
-      (r) => r.creatorId === creatorUserId && r.status === 'requested',
-    );
+    const pending = this.memCallRequests
+      .filter(
+        (r) =>
+          r.creatorId === creatorUserId &&
+          r.status === 'requested' &&
+          !r.callId,
+      )
+      .slice(0, 1);
     return {
       requests: pending.map((r) => ({
         id: r.id,
@@ -496,6 +630,18 @@ export class CallsService {
       );
     }
 
+    if (await this.creatorHasBlockingCallState(creator.id)) {
+      throw new BadRequestException(
+        'Creator is busy on another call. Please try again later.',
+      );
+    }
+
+    if (await this.callerHasBlockingCallState(callerId)) {
+      throw new BadRequestException(
+        'You already have a call in progress.',
+      );
+    }
+
     // Pre-generate channel name so it can be sent in the FCM payload
     const channelName = `ch_${Date.now()}`;
     const createdAt = new Date().toISOString();
@@ -516,6 +662,11 @@ export class CallsService {
           .single();
 
         if (reqErr) {
+          if ((reqErr as { code?: string }).code === '23505') {
+            throw new BadRequestException(
+              'Creator is busy on another call. Please try again later.',
+            );
+          }
           throw new InternalServerErrorException(
             `Failed to create call request: ${reqErr.message}`,
           );
@@ -527,24 +678,20 @@ export class CallsService {
           creator.name,
         );
 
-        // Fetch creator user record to get FCM token, then fire-and-forget
-        this.usersService
-          .findOne(creator.id)
-          .then((creatorUser) => {
-            if (!creatorUser.fcm_token) return;
-            const callerAvatar = `https://i.pravatar.cc/150?u=${caller.name}`;
-            return this.fcmService.sendIncomingCall({
-              fcmToken: creatorUser.fcm_token,
-              callerName: caller.name,
-              callerAvatar,
-              channelName,
-              callRequestId: record.id,
-              agoraToken: this._requireAgoraToken(channelName),
-              agoraAppId: process.env.AGORA_APP_ID ?? '',
-              callType: dto.type,
-            });
-          })
-          .catch((e) => console.warn('[FCM] requestCall notify error:', (e as Error).message));
+        const creatorUser = await this.usersService.findOne(creator.id);
+        if (creatorUser.fcm_token) {
+          const callerAvatar = `https://i.pravatar.cc/150?u=${caller.name}`;
+          await this.fcmService.sendIncomingCall({
+            fcmToken: creatorUser.fcm_token,
+            callerName: caller.name,
+            callerAvatar,
+            channelName,
+            callRequestId: record.id,
+            agoraToken: this._requireAgoraToken(channelName),
+            agoraAppId: process.env.AGORA_APP_ID ?? '',
+            callType: dto.type,
+          });
+        }
 
         return {
           success: true,
@@ -654,6 +801,11 @@ export class CallsService {
           startedAt,
         };
 
+        await this.cancelOtherPendingRequestsForCreator(
+          record.creatorId,
+          dto.callId,
+        );
+
         return {
           success: true,
           status: 'accepted' as const,
@@ -694,6 +846,11 @@ export class CallsService {
     record.status = 'accepted';
     record.callId = session.id;
     record.channelName = channelName;
+
+    await this.cancelOtherPendingRequestsForCreator(
+      record.creatorId,
+      dto.callId,
+    );
 
     return {
       success: true,
@@ -745,6 +902,13 @@ export class CallsService {
             coins_spent: 0,
           });
 
+        await this.notifyPeerCallCancelled(
+          creatorUserId,
+          record.callerId,
+          record.creatorId,
+          dto.callId,
+        );
+
         return {
           success: true,
           status: 'rejected' as const,
@@ -756,6 +920,12 @@ export class CallsService {
     }
 
     record.status = 'rejected';
+    await this.notifyPeerCallCancelled(
+      creatorUserId,
+      record.callerId,
+      record.creatorId,
+      dto.callId,
+    );
     this.memCalls.unshift({
       id: `CAL${Date.now().toString().slice(-6)}`,
       callerId: record.callerId,
@@ -807,7 +977,12 @@ export class CallsService {
     }
 
     record.status = 'cancelled';
-    this.notifyCreatorCallCancelled(record.creatorId, callRequestId);
+    await this.notifyPeerCallCancelled(
+      userId,
+      record.callerId,
+      record.creatorId,
+      callRequestId,
+    );
 
     return {
       success: true,
@@ -1292,6 +1467,15 @@ export class CallsService {
           .eq('call_id', callId)
           .eq('status', 'requested');
 
+        const memReqEarly = this.memCallRequests.find((r) => r.callId === callId);
+        await this.notifyPeerCallEnded(
+          userId,
+          callerId,
+          creatorId,
+          callId,
+          memReqEarly?.id,
+        );
+
         let newBalance: number | undefined;
         try {
           const updatedCaller = await this.usersService.updateCoins(
@@ -1337,14 +1521,6 @@ export class CallsService {
 
         const memReq = this.memCallRequests.find((r) => r.callId === callId);
         if (memReq) memReq.status = 'accepted';
-
-        this.notifyPeerCallEnded(
-          userId,
-          callerId,
-          creatorId,
-          callId,
-          memReq?.id,
-        );
 
         const endedRow = {
           ...row,
@@ -1428,7 +1604,7 @@ export class CallsService {
     const memReq = this.memCallRequests.find((r) => r.callId === callId);
     if (memReq) memReq.status = 'accepted';
 
-    this.notifyPeerCallEnded(
+    await this.notifyPeerCallEnded(
       userId,
       mem.callerId,
       mem.creatorId,
