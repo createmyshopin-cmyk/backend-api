@@ -614,6 +614,50 @@ export class CallsService {
     };
   }
 
+  private async findPendingCallRequestBetween(
+    callerId: string,
+    creatorId: string,
+  ): Promise<CallRequestRecord | null> {
+    if (this.supabase.isConfigured) {
+      try {
+        const { data, error } = await this.supabase
+          .getClient()
+          .from('call_requests')
+          .select(
+            'id, caller_id, creator_id, type, status, channel_name, call_id, created_at',
+          )
+          .eq('caller_id', callerId)
+          .eq('creator_id', creatorId)
+          .eq('status', 'requested')
+          .is('call_id', null)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (!error && data) {
+          const row = data as Record<string, unknown>;
+          const caller = await this.usersService.findOne(callerId);
+          const creator = await this.creatorsService.findOne(creatorId);
+          return rowToCallRequest(row, caller.name, creator.name);
+        }
+      } catch (e) {
+        console.warn(
+          'findPendingCallRequestBetween:',
+          (e as Error).message,
+        );
+      }
+    }
+
+    const mem = this.memCallRequests.find(
+      (r) =>
+        r.callerId === callerId &&
+        r.creatorId === creatorId &&
+        r.status === 'requested' &&
+        !r.callId,
+    );
+    return mem ?? null;
+  }
+
   // ─── Request a call (pending until creator accepts) ─────────────────────────
 
   async requestCall(callerId: string, dto: RequestCallDto) {
@@ -628,6 +672,24 @@ export class CallsService {
       throw new BadRequestException(
         `Insufficient coins. You need at least ${MIN_COINS_TO_CALL} coins to start a call.`,
       );
+    }
+
+    const existingPending = await this.findPendingCallRequestBetween(
+      callerId,
+      creator.id,
+    );
+    if (existingPending) {
+      const channelName =
+        existingPending.channelName ?? `ch_${Date.now()}`;
+      return {
+        success: true,
+        status: 'requested' as const,
+        callRequest: existingPending,
+        channelName,
+        agoraToken: this._requireAgoraToken(channelName),
+        agoraAppId: process.env.AGORA_APP_ID ?? '',
+        alreadyPending: true,
+      };
     }
 
     if (await this.creatorHasBlockingCallState(creator.id)) {
