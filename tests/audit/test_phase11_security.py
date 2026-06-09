@@ -84,7 +84,7 @@ class TestRateLimit:
     @pytest.mark.skip(reason="Run manually with burst traffic")
     def test_rate_limit_triggers(self, api_client: httpx.Client, caller_token: str):
         last_status = 200
-        for _ in range(15):
+        for _ in range(35):
             r = api_client.post(
                 "/gifts/send",
                 headers={"Authorization": f"Bearer {caller_token}"},

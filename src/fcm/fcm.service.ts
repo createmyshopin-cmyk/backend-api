@@ -35,6 +35,7 @@ export class FcmService {
   async sendIncomingCall(payload: IncomingCallPayload): Promise<void> {
     if (!payload.fcmToken) return;
     try {
+      // Data-only on Android so the app can show a full-screen incoming-call UI.
       await admin.messaging().send({
         token: payload.fcmToken,
         data: {
@@ -47,12 +48,19 @@ export class FcmService {
           agoraAppId: payload.agoraAppId,
           callType: payload.callType,
         },
-        notification: {
-          title: 'Incoming Call',
-          body: `${payload.callerName} is calling you`,
-        },
         android: {
           priority: 'high',
+        },
+        apns: {
+          payload: {
+            aps: {
+              alert: {
+                title: 'Incoming Call',
+                body: `${payload.callerName} is calling you`,
+              },
+              sound: 'default',
+            },
+          },
         },
       });
       console.log(`[FCM] Incoming call sent → ${payload.fcmToken.slice(0, 12)}...`);
