@@ -735,8 +735,7 @@ export class CreatorsService {
       if (earningErr) {
         // Postgres unique-violation code: 23505
         if ((earningErr as any).code === '23505') {
-          console.warn(`[recordEarnings] Duplicate earning suppressed for call ${callId} — unique constraint hit.`);
-          return; // Exit cleanly; wallet was already credited on the first request.
+          return; // Idempotent: concurrent end-call already credited this call.
         }
         throw new Error(`Failed to log creator earning: ${earningErr.message}`);
       }

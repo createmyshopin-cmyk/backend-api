@@ -1508,7 +1508,7 @@ export class CallsService {
         const coinsSpent = computeCoins(durationSeconds, ratePerMinute);
         const balanceBefore = caller.coins;
 
-        await this.supabase
+        const { data: endedCall, error: endErr } = await this.supabase
           .getClient()
           .from('calls')
           .update({
@@ -1519,7 +1519,30 @@ export class CallsService {
             coins_deducted: coinsSpent,
             ended_reason: dto.endedReason ?? null,
           })
-          .eq('id', callId);
+          .eq('id', callId)
+          .in('status', ACTIVE_CALL_STATUSES)
+          .select('*')
+          .maybeSingle();
+
+        if (endErr) {
+          throw new InternalServerErrorException(endErr.message);
+        }
+
+        if (!endedCall) {
+          const fullRow = await this.fetchCallRow(callId);
+          const summary = await this.assembleCallEndSummary(fullRow, userId);
+          const session = rowToSession(fullRow);
+          return {
+            message: 'Call already ended.',
+            alreadyEnded: true,
+            callSession: session,
+            callRequestStatus: 'accepted' as const,
+            coinsDeducted: summary.callCoinsSpent,
+            coinsSpent: summary.callCoinsSpent,
+            newBalance: summary.remainingBalance,
+            ...summary,
+          };
+        }
 
         // Ensure this request never surfaces again as "incoming"
         await this.supabase

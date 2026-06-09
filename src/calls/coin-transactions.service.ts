@@ -38,10 +38,14 @@ export class CoinTransactionsService {
   constructor(private readonly supabase: SupabaseService) {}
 
   async record(params: RecordParams): Promise<CoinTransactionRecord | null> {
+    // DB constraint: amount must equal balance_after - balance_before.
+    // Use the actual wallet delta (not the nominal charge) so capped deductions
+    // (GREATEST(0, …) in adjust_user_coins) still satisfy the ledger invariant.
+    const amount = params.balanceAfter - params.balanceBefore;
     const row = {
       user_id: params.userId,
       type: params.type,
-      amount: params.amount,
+      amount,
       balance_before: params.balanceBefore,
       balance_after: params.balanceAfter,
       reference_id: params.referenceId ?? null,
@@ -58,6 +62,10 @@ export class CoinTransactionsService {
           .single();
 
         if (error) {
+          // Idempotent: concurrent end-call requests share one call_deduction row.
+          if ((error as { code?: string }).code === '23505') {
+            return null;
+          }
           console.warn(`CoinTransactionsService.record(${params.type}):`, error.message);
           return null;
         }
@@ -76,7 +84,7 @@ export class CoinTransactionsService {
       id: `TXN${Date.now().toString().slice(-6)}`,
       userId: params.userId,
       type: params.type,
-      amount: params.amount,
+      amount,
       balanceBefore: params.balanceBefore,
       balanceAfter: params.balanceAfter,
       referenceId: params.referenceId,

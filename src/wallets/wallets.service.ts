@@ -14,6 +14,9 @@ export interface WalletTransaction {
   date: string;
 }
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 @Injectable()
 export class WalletsService {
   constructor(
@@ -37,7 +40,7 @@ export class WalletsService {
   }
 
   async getTransactions(userId?: string) {
-    if (this.supabase.isConfigured) {
+    if (this.supabase.isConfigured && (!userId || UUID_RE.test(userId))) {
       try {
         const client = this.supabase.getClient();
         let q = client
