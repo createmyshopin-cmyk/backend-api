@@ -159,6 +159,47 @@ export class CallsService {
     private readonly coinTransactions: CoinTransactionsService,
   ) {}
 
+  private notifyCreatorCallCancelled(
+    creatorId: string,
+    callRequestId: string,
+  ): void {
+    this.usersService
+      .findOne(creatorId)
+      .then((creator) => {
+        if (!creator.fcm_token) return;
+        return this.fcmService.sendCallCancelled({
+          fcmToken: creator.fcm_token,
+          callRequestId,
+        });
+      })
+      .catch((e) =>
+        console.warn('[FCM] call cancelled notify error:', (e as Error).message),
+      );
+  }
+
+  private notifyPeerCallEnded(
+    endedByUserId: string,
+    callerId: string,
+    creatorId: string,
+    callSessionId: string,
+    callRequestId?: string,
+  ): void {
+    const peerId = endedByUserId === callerId ? creatorId : callerId;
+    this.usersService
+      .findOne(peerId)
+      .then((peer) => {
+        if (!peer.fcm_token) return;
+        return this.fcmService.sendCallEnded({
+          fcmToken: peer.fcm_token,
+          callSessionId,
+          callRequestId,
+        });
+      })
+      .catch((e) =>
+        console.warn('[FCM] call ended notify error:', (e as Error).message),
+      );
+  }
+
   // ─── Query ──────────────────────────────────────────────────────────────────
 
   /** All non-active sessions (admin monitoring). */
@@ -766,6 +807,7 @@ export class CallsService {
     }
 
     record.status = 'cancelled';
+    this.notifyCreatorCallCancelled(record.creatorId, callRequestId);
 
     return {
       success: true,
@@ -1296,6 +1338,14 @@ export class CallsService {
         const memReq = this.memCallRequests.find((r) => r.callId === callId);
         if (memReq) memReq.status = 'accepted';
 
+        this.notifyPeerCallEnded(
+          userId,
+          callerId,
+          creatorId,
+          callId,
+          memReq?.id,
+        );
+
         const endedRow = {
           ...row,
           status: 'ended',
@@ -1377,6 +1427,14 @@ export class CallsService {
 
     const memReq = this.memCallRequests.find((r) => r.callId === callId);
     if (memReq) memReq.status = 'accepted';
+
+    this.notifyPeerCallEnded(
+      userId,
+      mem.callerId,
+      mem.creatorId,
+      callId,
+      memReq?.id,
+    );
 
     let newBalance: number | undefined;
     try {

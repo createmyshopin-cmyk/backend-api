@@ -12,6 +12,17 @@ export interface IncomingCallPayload {
   callType: 'voice' | 'video';
 }
 
+export interface CallCancelledFcmPayload {
+  fcmToken: string;
+  callRequestId: string;
+}
+
+export interface CallEndedFcmPayload {
+  fcmToken: string;
+  callSessionId: string;
+  callRequestId?: string;
+}
+
 export interface GiftReceivedFcmPayload {
   fcmToken: string;
   giftTransactionId: string;
@@ -66,6 +77,41 @@ export class FcmService {
       console.log(`[FCM] Incoming call sent → ${payload.fcmToken.slice(0, 12)}...`);
     } catch (e) {
       console.warn('[FCM] sendIncomingCall error:', (e as Error).message);
+    }
+  }
+
+  async sendCallCancelled(payload: CallCancelledFcmPayload): Promise<void> {
+    if (!payload.fcmToken) return;
+    try {
+      await admin.messaging().send({
+        token: payload.fcmToken,
+        data: {
+          type: 'call_cancelled',
+          callRequestId: payload.callRequestId,
+        },
+        android: { priority: 'high' },
+      });
+    } catch (e) {
+      console.warn('[FCM] sendCallCancelled error:', (e as Error).message);
+    }
+  }
+
+  async sendCallEnded(payload: CallEndedFcmPayload): Promise<void> {
+    if (!payload.fcmToken) return;
+    try {
+      await admin.messaging().send({
+        token: payload.fcmToken,
+        data: {
+          type: 'call_ended',
+          callSessionId: payload.callSessionId,
+          ...(payload.callRequestId
+            ? { callRequestId: payload.callRequestId }
+            : {}),
+        },
+        android: { priority: 'high' },
+      });
+    } catch (e) {
+      console.warn('[FCM] sendCallEnded error:', (e as Error).message);
     }
   }
 
