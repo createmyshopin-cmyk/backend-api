@@ -24,6 +24,7 @@ import { AgoraTokenDto } from './dto/agora-token.dto';
 import { UpdateCallStatusDto } from './dto/update-call-status.dto';
 import { JwtAuthGuard } from '../auth/auth.guard';
 import { AdminGuard } from '../auth/admin.guard';
+import { AppUserGuard } from '../auth/app-user.guard';
 
 @ApiTags('Call Connections')
 @ApiBearerAuth()
@@ -35,9 +36,11 @@ export class CallsController {
   // ── Monitoring (admin) ──────────────────────────────────────────────────────
 
   @Get('active/me')
+  @UseGuards(AppUserGuard)
   @ApiOperation({ summary: "Get the authenticated user's active call session" })
   @ApiResponse({ status: 200, description: 'Active call or null when none.' })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
+  @ApiResponse({ status: 403, description: 'Admin tokens cannot use app-user endpoints.' })
   getMyActiveCall(@Request() req: { user: { id: string } }) {
     return this.callsService.getActiveCallForUser(req.user.id);
   }
