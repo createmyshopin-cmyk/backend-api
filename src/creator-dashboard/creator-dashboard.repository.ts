@@ -116,12 +116,10 @@ export class CreatorDashboardRepository {
         })),
       };
     } catch (e) {
-      this.logger.warn(`analytics window failed: ${(e as Error).message}`);
-      throw new ServiceUnavailableException({
-        statusCode: 503,
-        code: 'dashboard_unavailable',
-        message: 'Unable to load analytics data',
-      });
+      this.logger.warn(
+        `analytics window failed for ${profileId} (${fromDate}..${toDate}): ${(e as Error).message}`,
+      );
+      return { metrics: this.zeroMetrics(), chart: [] };
     }
   }
 

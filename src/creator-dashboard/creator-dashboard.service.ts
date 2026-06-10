@@ -49,13 +49,13 @@ export class CreatorDashboardService {
       this.repository.getWallet(scope),
     );
     const todayTimed = timed(this.logger, SCOPE, 'analytics:today', () =>
-      this.repository.getAnalyticsWindow(scope.creatorProfileId, today, today),
+      this.safeAnalyticsWindow(scope.creatorProfileId, today, today),
     );
     const w7Timed = timed(this.logger, SCOPE, 'analytics:7d', () =>
-      this.repository.getAnalyticsWindow(scope.creatorProfileId, from7, today),
+      this.safeAnalyticsWindow(scope.creatorProfileId, from7, today),
     );
     const w30Timed = timed(this.logger, SCOPE, 'analytics:30d', () =>
-      this.repository.getAnalyticsWindow(scope.creatorProfileId, from30, today),
+      this.safeAnalyticsWindow(scope.creatorProfileId, from30, today),
     );
     const lifetimeCountsTimed = timed(this.logger, SCOPE, 'analytics:lifetime_counts', () =>
       this.repository.getLifetimeCounts(scope.creatorProfileId),
@@ -277,6 +277,31 @@ export class CreatorDashboardService {
       items,
       pageInfo,
     };
+  }
+
+  private async safeAnalyticsWindow(
+    profileId: string,
+    fromDate: string,
+    toDate: string,
+  ): Promise<{ metrics: AnalyticsMetrics; chart: ChartDayPoint[] }> {
+    try {
+      return await this.repository.getAnalyticsWindow(profileId, fromDate, toDate);
+    } catch (e) {
+      this.logger.warn(
+        `safeAnalyticsWindow fallback for ${profileId}: ${(e as Error).message}`,
+      );
+      return {
+        metrics: {
+          totalEarnings: 0,
+          callEarnings: 0,
+          giftEarnings: 0,
+          callCount: 0,
+          giftCount: 0,
+          talkMinutes: 0,
+        },
+        chart: [],
+      };
+    }
   }
 
   private buildRestrictions(scope: CreatorRequestScope) {

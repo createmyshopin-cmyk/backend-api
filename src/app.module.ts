@@ -13,6 +13,7 @@ import { FinanceModule } from './admin/finance/finance.module';
 import { AdminUsersModule } from './admin/users/admin-users.module';
 import { GiftModule } from './gifts/gift.module';
 import { CreatorDashboardModule } from './creator-dashboard/creator-dashboard.module';
+import { EngagementModule } from './engagement/engagement.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -31,6 +32,7 @@ import { HealthController } from './health.controller';
     AdminUsersModule,
     GiftModule,
     CreatorDashboardModule,
+    EngagementModule,
   ],
   controllers: [HealthController],
 })
