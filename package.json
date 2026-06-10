@@ -6,9 +6,9 @@
   "license": "UNLICENSED",
   "scripts": {
     "build": "nest build",
-    "start": "node dist/src/main.js",
+    "start": "node dist/main.js",
     "start:dev": "nest start --watch",
-    "start:prod": "node dist/src/main.js",
+    "start:prod": "node dist/main.js",
     "test": "jest",
     "test:unit": "jest --testPathPattern=gift.service.spec",
     "test:integration": "jest --testPathPattern=gift.integration.spec",
