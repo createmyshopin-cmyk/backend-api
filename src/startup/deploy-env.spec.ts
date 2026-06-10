@@ -6,17 +6,26 @@ import {
 import { validateAdminInviteSecret } from './rules/invite.rules';
 
 describe('deploy-env', () => {
-  it('infers production on Railway when PLATFORM_TIER is missing', () => {
+  it('defaults hosted Railway deploys to development when PLATFORM_TIER is missing', () => {
     const env: NodeJS.ProcessEnv = {
       NODE_ENV: 'production',
       RAILWAY_PROJECT_ID: 'proj-123',
     };
-    expect(inferPlatformTier(env)).toBe('production');
+    expect(inferPlatformTier(env)).toBe('development');
   });
 
-  it('infers production from RAILWAY_ENVIRONMENT_NAME', () => {
+  it('does not infer production from Railway environment name alone', () => {
     const env: NodeJS.ProcessEnv = {
       RAILWAY_ENVIRONMENT_NAME: 'production',
+      RAILWAY_PROJECT_ID: 'proj-123',
+    };
+    expect(inferPlatformTier(env)).toBe('development');
+  });
+
+  it('respects explicit PLATFORM_TIER=production', () => {
+    const env: NodeJS.ProcessEnv = {
+      PLATFORM_TIER: 'production',
+      RAILWAY_PROJECT_ID: 'proj-123',
     };
     expect(inferPlatformTier(env)).toBe('production');
   });
@@ -28,13 +37,13 @@ describe('deploy-env', () => {
     expect(inferPlatformTier(env)).toBeNull();
   });
 
-  it('applies PLATFORM_TIER and CORS_ORIGINS defaults on hosted production', () => {
+  it('applies PLATFORM_TIER and CORS_ORIGINS defaults on hosted deploy', () => {
     const env: NodeJS.ProcessEnv = {
       NODE_ENV: 'production',
       RAILWAY_SERVICE_ID: 'svc-123',
     };
     applyDeployEnvDefaults(env);
-    expect(env.PLATFORM_TIER).toBe('production');
+    expect(env.PLATFORM_TIER).toBe('development');
     expect(env.CORS_ORIGINS).toBe('https://admin.creomine.com');
   });
 

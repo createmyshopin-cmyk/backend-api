@@ -27,11 +27,12 @@ export function inferPlatformTier(env: NodeJS.ProcessEnv): PlatformTier | null {
     .trim()
     .toLowerCase();
 
-  if (railwayName === 'production') return 'production';
   if (railwayName === 'staging' || railwayName === 'preview') return 'staging';
 
-  if (env.NODE_ENV === 'production' && isHostedRuntime(env)) {
-    return 'production';
+  // Never auto-infer production — requires explicit PLATFORM_TIER=production at go-live.
+  // Hosted deploys default to development (test Razorpay keys, Swagger allowed).
+  if (isHostedRuntime(env)) {
+    return 'development';
   }
 
   return null;
@@ -47,7 +48,7 @@ function inferCorsOrigins(env: NodeJS.ProcessEnv, tier: PlatformTier): string | 
   const adminPanel = env.ADMIN_PANEL_URL?.trim().replace(/\/$/, '');
   if (adminPanel) return adminPanel;
 
-  if (tier === 'production' && isHostedRuntime(env)) {
+  if (isHostedRuntime(env)) {
     return 'https://admin.creomine.com';
   }
 
