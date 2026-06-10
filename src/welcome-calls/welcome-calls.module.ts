@@ -13,7 +13,7 @@ import { UserWelcomeCallsController } from './user-welcome-calls.controller';
 @Module({
   imports: [
     SupabaseModule,
-    UsersModule,
+    forwardRef(() => UsersModule),
     CreatorDashboardModule,
     forwardRef(() => CallsModule),
   ],
