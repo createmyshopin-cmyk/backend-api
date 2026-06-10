@@ -20,7 +20,7 @@ describe('creator-analytics-live.util', () => {
     expect(result.metrics.totalEarnings).toBe(114);
     expect(result.metrics.callCount).toBe(1);
     expect(result.metrics.giftCount).toBe(1);
-    expect(result.metrics.talkMinutes).toBe(2);
+    expect(result.metrics.talkMinutes).toBe(2); // 120s
     expect(result.chart).toHaveLength(1);
   });
 
@@ -38,5 +38,15 @@ describe('creator-analytics-live.util', () => {
 
   it('formats bucket dates in Asia/Kolkata', () => {
     expect(istBucketDate('2026-06-10T20:00:00.000Z')).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it('rounds partial minutes up for talk time', () => {
+    const result = aggregateLiveAnalytics(
+      [],
+      [{ started_at: '2026-06-10T11:00:00.000Z', duration_seconds: 49, creator_earnings: { creator_share: 7 } }],
+      '2026-06-10',
+      '2026-06-10',
+    );
+    expect(result.metrics.talkMinutes).toBe(1);
   });
 });

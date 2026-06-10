@@ -129,7 +129,7 @@ export function aggregateLiveAnalytics(
       giftEarnings: giftCoins,
       callCount,
       giftCount,
-      talkMinutes: Math.floor(durationSeconds / 60),
+      talkMinutes: durationSeconds > 0 ? Math.ceil(durationSeconds / 60) : 0,
     },
     chart,
   };

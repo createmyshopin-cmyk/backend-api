@@ -111,7 +111,7 @@ export class CreatorDashboardRepository {
         giftEarnings: window.giftCoins,
         callCount: window.callCount,
         giftCount: window.giftsReceivedCount,
-        talkMinutes: Math.floor(window.callDurationSeconds / 60),
+        talkMinutes: this.secondsToTalkMinutes(window.callDurationSeconds),
       };
       chart = window.dailySeries.map((d) => ({
         date: d.date,
@@ -470,6 +470,10 @@ export class CreatorDashboardRepository {
       giftEarningsTotal: 0,
       asOf: now,
     };
+  }
+
+  private secondsToTalkMinutes(seconds: number): number {
+    return seconds > 0 ? Math.ceil(seconds / 60) : 0;
   }
 
   private zeroMetrics(): AnalyticsMetrics {
