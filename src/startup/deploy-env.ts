@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { PlatformTier } from './platform-config';
 
 const VALID_TIERS: PlatformTier[] = ['development', 'staging', 'production'];
@@ -53,6 +54,23 @@ function inferCorsOrigins(env: NodeJS.ProcessEnv, tier: PlatformTier): string | 
   return null;
 }
 
+/** Derive a distinct admin-invite secret from JWT_SECRET (hosted bootstrap only). */
+export function deriveAdminInviteSecret(jwtSecret: string): string {
+  return createHash('sha256')
+    .update(`${jwtSecret.trim()}:creomine-admin-invite:v1`)
+    .digest('hex');
+}
+
+function inferAdminInviteSecret(env: NodeJS.ProcessEnv): string | null {
+  if (env.ADMIN_INVITE_SECRET?.trim()) return null;
+  if (!isHostedRuntime(env)) return null;
+
+  const jwt = env.JWT_SECRET?.trim() ?? '';
+  if (jwt.length < 32) return null;
+
+  return deriveAdminInviteSecret(jwt);
+}
+
 /**
  * Apply safe defaults for hosted deploys before startup validation.
  * Mutates env in-place (process.env).
@@ -85,6 +103,18 @@ export function applyDeployEnvDefaults(env: NodeJS.ProcessEnv = process.env): vo
         key: 'CORS_ORIGINS',
         value: corsDefault,
         reason: 'production_cors_allowlist',
+      }),
+    );
+  }
+
+  const inviteDefault = inferAdminInviteSecret(env);
+  if (inviteDefault) {
+    env.ADMIN_INVITE_SECRET = inviteDefault;
+    console.warn(
+      JSON.stringify({
+        event: 'startup_env_default',
+        key: 'ADMIN_INVITE_SECRET',
+        reason: 'derived_from_jwt_secret_on_hosted_runtime',
       }),
     );
   }

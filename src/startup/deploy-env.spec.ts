@@ -1,4 +1,9 @@
-import { applyDeployEnvDefaults, inferPlatformTier } from './deploy-env';
+import {
+  applyDeployEnvDefaults,
+  deriveAdminInviteSecret,
+  inferPlatformTier,
+} from './deploy-env';
+import { validateAdminInviteSecret } from './rules/invite.rules';
 
 describe('deploy-env', () => {
   it('infers production on Railway when PLATFORM_TIER is missing', () => {
@@ -42,5 +47,28 @@ describe('deploy-env', () => {
     applyDeployEnvDefaults(env);
     expect(env.PLATFORM_TIER).toBe('staging');
     expect(env.CORS_ORIGINS).toBe('https://staging-admin.example.com');
+  });
+
+  it('derives ADMIN_INVITE_SECRET from JWT_SECRET on hosted runtime', () => {
+    const jwt = 'railway-production-jwt-secret-32chars!!';
+    const env: NodeJS.ProcessEnv = {
+      NODE_ENV: 'production',
+      RAILWAY_PROJECT_ID: 'proj-123',
+      JWT_SECRET: jwt,
+    };
+    applyDeployEnvDefaults(env);
+    expect(env.ADMIN_INVITE_SECRET).toBe(deriveAdminInviteSecret(jwt));
+    expect(env.ADMIN_INVITE_SECRET).not.toBe(jwt);
+    const validation = validateAdminInviteSecret(env, 'production');
+    expect(validation.ok).toBe(true);
+  });
+
+  it('does not derive ADMIN_INVITE_SECRET locally without Railway', () => {
+    const env: NodeJS.ProcessEnv = {
+      NODE_ENV: 'development',
+      JWT_SECRET: 'local-dev-jwt-secret-32-characters!!',
+    };
+    applyDeployEnvDefaults(env);
+    expect(env.ADMIN_INVITE_SECRET).toBeUndefined();
   });
 });
