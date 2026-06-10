@@ -1,4 +1,5 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
+import { AuthModule } from '../auth/auth.module';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { EngagementController } from './engagement.controller';
 import { EngagementService } from './engagement.service';
@@ -11,7 +12,7 @@ import { VipService } from './vip.service';
 import { VipController } from './vip.controller';
 
 @Module({
-  imports: [SupabaseModule],
+  imports: [SupabaseModule, forwardRef(() => AuthModule)],
   controllers: [EngagementController, VipController],
   providers: [
     EngagementService,

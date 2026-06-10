@@ -1,4 +1,5 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
+import { AuthModule } from '../auth/auth.module';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { CreatorDashboardModule } from '../creator-dashboard/creator-dashboard.module';
 import { CreatorWithdrawalsController } from './creator-withdrawals.controller';
@@ -9,7 +10,7 @@ import { WithdrawalMutationGuard } from './guards/withdrawal-mutation.guard';
 import { CreatorWithdrawalRpcService } from './creator-withdrawal-rpc.service';
 
 @Module({
-  imports: [SupabaseModule, CreatorDashboardModule],
+  imports: [SupabaseModule, CreatorDashboardModule, forwardRef(() => AuthModule)],
   controllers: [CreatorWithdrawalsController],
   providers: [
     CreatorWithdrawalsService,

@@ -1,4 +1,5 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
+import { AuthModule } from '../auth/auth.module';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { CreatorAnalyticsModule } from '../creator-analytics/creator-analytics.module';
 import { CreatorDashboardController } from './creator-dashboard.controller';
@@ -7,7 +8,7 @@ import { CreatorDashboardRepository } from './creator-dashboard.repository';
 import { CreatorScopeGuard } from './creator-scope.guard';
 
 @Module({
-  imports: [SupabaseModule, CreatorAnalyticsModule],
+  imports: [SupabaseModule, CreatorAnalyticsModule, forwardRef(() => AuthModule)],
   controllers: [CreatorDashboardController],
   providers: [CreatorDashboardService, CreatorDashboardRepository, CreatorScopeGuard],
   exports: [CreatorDashboardService, CreatorDashboardRepository, CreatorScopeGuard],

@@ -1,4 +1,5 @@
 import { Module, forwardRef } from '@nestjs/common';
+import { AuthModule } from '../auth/auth.module';
 import { SupabaseModule } from '../supabase/supabase.module';
 import { UsersModule } from '../users/users.module';
 import { CallsModule } from '../calls/calls.module';
@@ -13,6 +14,7 @@ import { UserWelcomeCallsController } from './user-welcome-calls.controller';
 @Module({
   imports: [
     SupabaseModule,
+    forwardRef(() => AuthModule),
     forwardRef(() => UsersModule),
     CreatorDashboardModule,
     forwardRef(() => CallsModule),
