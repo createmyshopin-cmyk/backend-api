@@ -49,16 +49,16 @@ export class CreatorDashboardService {
       this.repository.getWallet(scope),
     );
     const todayTimed = timed(this.logger, SCOPE, 'analytics:today', () =>
-      this.safeAnalyticsWindow(scope.creatorProfileId, today, today),
+      this.safeAnalyticsWindow(scope, today, today),
     );
     const w7Timed = timed(this.logger, SCOPE, 'analytics:7d', () =>
-      this.safeAnalyticsWindow(scope.creatorProfileId, from7, today),
+      this.safeAnalyticsWindow(scope, from7, today),
     );
     const w30Timed = timed(this.logger, SCOPE, 'analytics:30d', () =>
-      this.safeAnalyticsWindow(scope.creatorProfileId, from30, today),
+      this.safeAnalyticsWindow(scope, from30, today),
     );
     const lifetimeCountsTimed = timed(this.logger, SCOPE, 'analytics:lifetime_counts', () =>
-      this.repository.getLifetimeCounts(scope.creatorProfileId),
+      this.repository.getLifetimeCounts(scope),
     );
 
     const [walletR, todayR, w7R, w30R, lifetimeR] = await Promise.all([
@@ -80,9 +80,16 @@ export class CreatorDashboardService {
     const wallet = walletR.result;
     const chart7 = this.normalizeChart7(w7R.result.chart, today);
 
+    const lifetimeCallEarnings =
+      wallet.callEarningsTotal > 0
+        ? wallet.callEarningsTotal
+        : lifetimeR.result.callCount > 0
+          ? Math.max(0, wallet.totalEarned - wallet.giftEarningsTotal)
+          : 0;
+
     const lifetime: AnalyticsMetrics = {
       totalEarnings: wallet.totalEarned,
-      callEarnings: wallet.callEarningsTotal,
+      callEarnings: lifetimeCallEarnings,
       giftEarnings: wallet.giftEarningsTotal,
       callCount: lifetimeR.result.callCount,
       giftCount: lifetimeR.result.giftCount,
@@ -280,15 +287,15 @@ export class CreatorDashboardService {
   }
 
   private async safeAnalyticsWindow(
-    profileId: string,
+    scope: CreatorRequestScope,
     fromDate: string,
     toDate: string,
   ): Promise<{ metrics: AnalyticsMetrics; chart: ChartDayPoint[] }> {
     try {
-      return await this.repository.getAnalyticsWindow(profileId, fromDate, toDate);
+      return await this.repository.getAnalyticsWindow(scope, fromDate, toDate);
     } catch (e) {
       this.logger.warn(
-        `safeAnalyticsWindow fallback for ${profileId}: ${(e as Error).message}`,
+        `safeAnalyticsWindow fallback for ${scope.creatorProfileId}: ${(e as Error).message}`,
       );
       return {
         metrics: {
