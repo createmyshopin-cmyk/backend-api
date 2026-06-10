@@ -14,6 +14,7 @@ import { probeFirebase } from './probes/firebase.probe';
 import { probeRazorpay } from './probes/razorpay.probe';
 import { probeAgora } from './probes/agora.probe';
 import { applyDeployEnvDefaults } from './deploy-env';
+import { parseCorsOrigins } from './cors-options';
 
 export type ServiceProfile = 'admin-backend' | 'api-backend';
 
@@ -49,10 +50,7 @@ function collectPhaseResults(
 
 function buildConfig(env: NodeJS.ProcessEnv, tier: PlatformTier): PlatformConfigShape {
   const firebaseCreds = resolveFirebaseCredentials(env);
-  const corsOrigins = (env.CORS_ORIGINS ?? '')
-    .split(',')
-    .map((o) => o.trim())
-    .filter(Boolean);
+  const corsOrigins = parseCorsOrigins(env.CORS_ORIGINS);
 
   const mockPaymentsAllowed =
     tier === 'development' &&

@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { runStartupValidation, getPlatformConfig } from './startup';
+import { buildCorsOptions } from './startup/cors-options';
 
 async function bootstrap() {
   await runStartupValidation({
@@ -15,17 +16,12 @@ async function bootstrap() {
   const platform = getPlatformConfig();
   const app = await NestFactory.create(AppModule, { rawBody: true });
 
-  app.enableCors(
-    platform.tier === 'production' && platform.corsOrigins.length
-      ? { origin: platform.corsOrigins, credentials: true }
-      : platform.corsOrigins.length
-        ? { origin: platform.corsOrigins, credentials: true }
-        : undefined,
-  );
+  app.enableCors(buildCorsOptions(platform.corsOrigins));
 
   app.setGlobalPrefix('api', {
     exclude: [
       { path: '', method: RequestMethod.GET },
+      { path: 'api', method: RequestMethod.GET },
       { path: 'health', method: RequestMethod.GET },
       { path: 'health/ready', method: RequestMethod.GET },
       { path: 'health/startup', method: RequestMethod.GET },

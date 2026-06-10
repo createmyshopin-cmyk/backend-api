@@ -17,6 +17,12 @@ describe('HealthController', () => {
     __resetPlatformConfigForTests();
   });
 
+  it('returns api root payload on GET /api', () => {
+    const payload = controller.apiRoot();
+    expect(payload.status).toBe('ok');
+    expect(payload.login).toBe('/api/auth/login');
+  });
+
   it('returns 503 on /health when startup not validated', () => {
     expect(() => controller.health()).toThrow(ServiceUnavailableException);
   });

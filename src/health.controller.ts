@@ -20,6 +20,17 @@ export class HealthController {
     return { status: 'ok', service: 'voice-calling-api' };
   }
 
+  @Get('api')
+  apiRoot() {
+    return {
+      status: 'ok',
+      service: 'admin-backend',
+      health: '/health',
+      docs: '/docs',
+      login: '/api/auth/login',
+    };
+  }
+
   @Get('health')
   health() {
     if (!isStartupValidated()) {
