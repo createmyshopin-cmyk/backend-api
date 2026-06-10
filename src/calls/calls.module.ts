@@ -12,8 +12,8 @@ import { WelcomeCallsModule } from '../welcome-calls/welcome-calls.module';
 
 @Module({
   imports: [
-    AuthModule,
-    UsersModule,
+    forwardRef(() => AuthModule),
+    forwardRef(() => UsersModule),
     CreatorsModule,
     SupabaseModule,
     EngagementModule,
