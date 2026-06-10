@@ -19,7 +19,6 @@ import {
   userLevelTitle,
   xpThresholdForLevel,
 } from './xp.util';
-import { isMissingEngagementSchema, logEngagementFallback } from './engagement-fallbacks';
 
 export interface CreatorSocialItem {
   id: string;
@@ -97,26 +96,7 @@ export class EngagementService {
         creator: null,
       };
     }
-    try {
-      return await this.rpc.getEngagementLevels(userId);
-    } catch (e) {
-      if (!isMissingEngagementSchema(e)) throw e;
-      logEngagementFallback('getEngagementLevels', e);
-      const totalXp = 0;
-      const level = levelFromTotalXp(totalXp, MAX_USER_LEVEL);
-      const nextThreshold = xpThresholdForLevel(level + 1, MAX_USER_LEVEL);
-      return {
-        user: {
-          currentXp: totalXp,
-          currentLevel: level,
-          levelTitle: userLevelTitle(level),
-          nextLevel: Math.min(level + 1, MAX_USER_LEVEL),
-          xpToNextLevel: Math.max(nextThreshold - totalXp, 0),
-          nextLevelThreshold: nextThreshold,
-        },
-        creator: null,
-      };
-    }
+    return this.rpc.getEngagementLevels(userId);
   }
 
   async listFollows(userId: string, cursor?: string, limit?: number) {
@@ -166,10 +146,6 @@ export class EngagementService {
 
     const { data, error } = await query;
     if (error) {
-      if (isMissingEngagementSchema(error)) {
-        logEngagementFallback('listFollows', error);
-        return { items: [], pageInfo: { hasMore: false, nextCursor: null, limit: pageLimit } };
-      }
       throw new BadRequestException(error.message);
     }
 
@@ -237,10 +213,6 @@ export class EngagementService {
 
     const { data, error } = await query;
     if (error) {
-      if (isMissingEngagementSchema(error)) {
-        logEngagementFallback('listFavorites', error);
-        return { items: [], pageInfo: { hasMore: false, nextCursor: null, limit: pageLimit } };
-      }
       throw new BadRequestException(error.message);
     }
 
@@ -393,13 +365,7 @@ export class EngagementService {
     if (!this.supabase.isConfigured) {
       return this.memMissions.get(userId) ?? defaultMemMissions();
     }
-    try {
-      return await this.missionRpc.getDailyMissionsBoard(userId);
-    } catch (e) {
-      if (!isMissingEngagementSchema(e)) throw e;
-      logEngagementFallback('getMissions', e);
-      return defaultMemMissions();
-    }
+    return this.missionRpc.getDailyMissionsBoard(userId);
   }
 
   async claimReward(
@@ -439,31 +405,14 @@ export class EngagementService {
         milestones: [],
       };
     }
-    try {
-      return await this.missionRpc.getStreakSnapshot(userId);
-    } catch (e) {
-      if (!isMissingEngagementSchema(e)) throw e;
-      logEngagementFallback('getStreak', e);
-      return {
-        currentStreak: 0,
-        longestStreak: 0,
-        graceTokensRemaining: 0,
-        milestones: [],
-      };
-    }
+    return this.missionRpc.getStreakSnapshot(userId);
   }
 
   async getRewards(userId: string, limit?: number) {
     if (!this.supabase.isConfigured) {
       return { items: [] };
     }
-    try {
-      return await this.missionRpc.getEngagementRewards(userId, limit ?? 20);
-    } catch (e) {
-      if (!isMissingEngagementSchema(e)) throw e;
-      logEngagementFallback('getRewards', e);
-      return { items: [] };
-    }
+    return this.missionRpc.getEngagementRewards(userId, limit ?? 20);
   }
 
   async getPremiumGifts() {
@@ -483,26 +432,14 @@ export class EngagementService {
         ],
       };
     }
-    try {
-      return await this.comboRpc.getPremiumGiftsCatalog();
-    } catch (e) {
-      if (!isMissingEngagementSchema(e)) throw e;
-      logEngagementFallback('getPremiumGifts', e);
-      return { items: [] };
-    }
+    return this.comboRpc.getPremiumGiftsCatalog();
   }
 
   async getComboStatus(userId: string) {
     if (!this.supabase.isConfigured) {
       return { activeCombos: [], milestones: [] };
     }
-    try {
-      return await this.comboRpc.getComboStatus(userId);
-    } catch (e) {
-      if (!isMissingEngagementSchema(e)) throw e;
-      logEngagementFallback('getComboStatus', e);
-      return { activeCombos: [], milestones: [] };
-    }
+    return this.comboRpc.getComboStatus(userId);
   }
 
   async getComboHistory(userId: string, limit?: number) {

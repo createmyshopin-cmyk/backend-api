@@ -8,17 +8,22 @@ import {
   UseGuards,
   Request,
   Body,
+  Logger,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { CreatorsService } from './creators.service';
 import { JwtAuthGuard } from '../auth/auth.guard';
 import { AdminGuard } from '../auth/admin.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
 
 @ApiTags('Host Listeners Module')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller('creators')
 export class CreatorsController {
+  private readonly logger = new Logger(CreatorsController.name);
+
   constructor(private readonly creatorsService: CreatorsService) {}
 
   @Post()
@@ -38,7 +43,8 @@ export class CreatorsController {
   }
 
   @Get('pending')
-  @UseGuards(AdminGuard)
+  @UseGuards(AdminGuard, RolesGuard)
+  @Roles('super_admin', 'moderator', 'support_admin', 'operations_admin')
   @ApiOperation({ summary: 'Get pending host applications (admin)' })
   @ApiResponse({ status: 200, description: 'List of pending host profiles.' })
   @ApiResponse({ status: 403, description: 'Admin access required.' })
@@ -47,7 +53,8 @@ export class CreatorsController {
   }
 
   @Get('active')
-  @UseGuards(AdminGuard)
+  @UseGuards(AdminGuard, RolesGuard)
+  @Roles('super_admin', 'moderator', 'support_admin', 'operations_admin')
   @ApiOperation({ summary: 'Get active host listeners (admin)' })
   @ApiResponse({ status: 200, description: 'List of active hosts.' })
   @ApiResponse({ status: 403, description: 'Admin access required.' })
@@ -56,7 +63,8 @@ export class CreatorsController {
   }
 
   @Get('suspended')
-  @UseGuards(AdminGuard)
+  @UseGuards(AdminGuard, RolesGuard)
+  @Roles('super_admin', 'moderator', 'support_admin', 'fraud_admin', 'operations_admin')
   @ApiOperation({ summary: 'Get suspended host listeners (admin)' })
   @ApiResponse({ status: 200, description: 'List of suspended hosts.' })
   @ApiResponse({ status: 403, description: 'Admin access required.' })
@@ -65,7 +73,8 @@ export class CreatorsController {
   }
 
   @Get('rejected')
-  @UseGuards(AdminGuard)
+  @UseGuards(AdminGuard, RolesGuard)
+  @Roles('super_admin', 'moderator', 'support_admin', 'operations_admin')
   @ApiOperation({ summary: 'Get rejected host applications (admin)' })
   @ApiResponse({ status: 200, description: 'List of rejected host profiles.' })
   @ApiResponse({ status: 403, description: 'Admin access required.' })
@@ -119,8 +128,13 @@ export class CreatorsController {
   @ApiOperation({ summary: 'Get current creator wallet balance' })
   @ApiResponse({ status: 200, description: 'Wallet balance record.' })
   @ApiResponse({ status: 401, description: 'Unauthorized.' })
-  getWalletBalance(@Request() req: { user: { id: string } }) {
-    return this.creatorsService.getWalletBalance(req.user.id);
+  async getWalletBalance(@Request() req: { user: { id: string } }) {
+    const start = performance.now();
+    const result = await this.creatorsService.getWalletBalance(req.user.id);
+    this.logger.log(
+      `GET /creators/wallet/balance handler completed in ${Math.round(performance.now() - start)}ms`,
+    );
+    return result;
   }
 
   @Get(':id')
@@ -134,7 +148,8 @@ export class CreatorsController {
   }
 
   @Post(':id/approve')
-  @UseGuards(AdminGuard)
+  @UseGuards(AdminGuard, RolesGuard)
+  @Roles('super_admin', 'moderator', 'operations_admin')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Approve host application (admin)' })
   @ApiResponse({ status: 200, description: 'Application approved.' })
@@ -144,7 +159,8 @@ export class CreatorsController {
   }
 
   @Post(':id/reject')
-  @UseGuards(AdminGuard)
+  @UseGuards(AdminGuard, RolesGuard)
+  @Roles('super_admin', 'moderator', 'operations_admin')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Reject host application (admin)' })
   @ApiResponse({ status: 403, description: 'Admin access required.' })
@@ -153,7 +169,8 @@ export class CreatorsController {
   }
 
   @Post(':id/suspend')
-  @UseGuards(AdminGuard)
+  @UseGuards(AdminGuard, RolesGuard)
+  @Roles('super_admin', 'moderator', 'fraud_admin')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Toggle host suspension status (admin)' })
   @ApiResponse({ status: 403, description: 'Admin access required.' })

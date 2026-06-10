@@ -1,29 +1,23 @@
 import { Injectable } from '@nestjs/common';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { getPlatformConfig } from '../startup/platform-config';
 
 @Injectable()
 export class SupabaseService {
-  private readonly client: SupabaseClient | null;
+  private readonly client: SupabaseClient;
 
   constructor() {
-    const url = process.env.SUPABASE_URL;
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    this.client = url && key ? createClient(url, key) : null;
-    if (!this.client) {
-      console.warn(
-        'Supabase not configured (SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY). Creators API uses in-memory fallback.',
-      );
-    }
+    const { supabase } = getPlatformConfig();
+    this.client = createClient(supabase.url, supabase.serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
   }
 
   get isConfigured(): boolean {
-    return this.client !== null;
+    return true;
   }
 
   getClient(): SupabaseClient {
-    if (!this.client) {
-      throw new Error('Supabase client is not configured');
-    }
     return this.client;
   }
 }

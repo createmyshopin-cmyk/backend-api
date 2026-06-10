@@ -14,6 +14,8 @@ import {
   HttpStatus,
   UseGuards,
   Request,
+  Req,
+  Headers,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -32,6 +34,10 @@ import {
 } from './dto/payment.dto';
 import { JwtAuthGuard } from '../auth/auth.guard';
 import { AdminGuard } from '../auth/admin.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
+import type { AdminRequestUser } from '../auth/admin-user.types';
+import { Request as ExpressRequest } from 'express';
 
 @ApiTags('Recharges & Coin Packages')
 @ApiBearerAuth()
@@ -62,7 +68,8 @@ export class PaymentsController {
   // ── Coin packages (admin) ───────────────────────────────────────────────────
 
   @Post('packages')
-  @UseGuards(AdminGuard)
+  @UseGuards(AdminGuard, RolesGuard)
+  @Roles('super_admin', 'operations_admin')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: '[Admin] Create a new coin package' })
   @ApiResponse({ status: 201, description: 'Package created.' })
@@ -72,7 +79,8 @@ export class PaymentsController {
   }
 
   @Patch('packages/:id')
-  @UseGuards(AdminGuard)
+  @UseGuards(AdminGuard, RolesGuard)
+  @Roles('super_admin', 'operations_admin')
   @ApiOperation({ summary: '[Admin] Update a coin package (partial update)' })
   @ApiParam({ name: 'id', description: 'Coin package UUID' })
   @ApiResponse({ status: 200, description: 'Package updated.' })
@@ -86,7 +94,8 @@ export class PaymentsController {
   }
 
   @Delete('packages/:id')
-  @UseGuards(AdminGuard)
+  @UseGuards(AdminGuard, RolesGuard)
+  @Roles('super_admin', 'operations_admin')
   @ApiOperation({ summary: '[Admin] Deactivate a coin package (soft-delete)' })
   @ApiParam({ name: 'id', description: 'Coin package UUID' })
   @ApiResponse({ status: 200, description: 'Package deactivated.' })
@@ -99,7 +108,8 @@ export class PaymentsController {
   // ── Payment history (admin) ─────────────────────────────────────────────────
 
   @Get('history')
-  @UseGuards(AdminGuard)
+  @UseGuards(AdminGuard, RolesGuard)
+  @Roles('super_admin', 'finance_admin', 'support_admin')
   @ApiOperation({ summary: '[Admin] Payment transaction history' })
   @ApiQuery({ name: 'limit', required: false, type: Number, description: 'Max records (default 100)' })
   @ApiResponse({ status: 200, description: 'List of payment logs.' })
@@ -142,15 +152,17 @@ export class PaymentsController {
   @ApiResponse({ status: 409, description: 'Duplicate verify call — coins already credited.' })
   verify(
     @Request() req: { user: { id: string } },
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Body() dto: VerifyPaymentDto,
   ) {
-    return this.paymentsService.verifyPayment(req.user.id, dto);
+    return this.paymentsService.verifyPayment(req.user.id, dto, idempotencyKey);
   }
 
   // ── Admin operations ────────────────────────────────────────────────────────
 
   @Post(':paymentId/refund')
-  @UseGuards(AdminGuard)
+  @UseGuards(AdminGuard, RolesGuard)
+  @Roles('super_admin', 'finance_admin')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: '[Admin] Refund a successful payment and deduct coins' })
   @ApiParam({ name: 'paymentId', description: 'Internal payment UUID' })
@@ -159,9 +171,16 @@ export class PaymentsController {
   @ApiResponse({ status: 403, description: 'Admin access required.' })
   @ApiResponse({ status: 404, description: 'Payment not found.' })
   refund(
+    @Request() req: { user: AdminRequestUser },
+    @Req() expressReq: ExpressRequest,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
     @Param('paymentId', ParseUUIDPipe) paymentId: string,
     @Body('reason') reason?: string,
   ) {
-    return this.paymentsService.refundPayment(paymentId, reason);
+    return this.paymentsService.refundPayment(paymentId, reason, req.user, {
+      idempotencyKey,
+      ip: expressReq.ip,
+      userAgent: expressReq.headers['user-agent'],
+    });
   }
 }

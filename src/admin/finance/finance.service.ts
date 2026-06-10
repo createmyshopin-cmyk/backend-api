@@ -5,6 +5,7 @@ import { CreatorsService } from '../../creators/creators.service';
 import { PaymentsService } from '../../payments/payments.service';
 import { CallsService } from '../../calls/calls.service';
 import { WithdrawalsService } from '../../withdrawals/withdrawals.service';
+import { csvCell } from '../../common/csv.util';
 
 @Injectable()
 export class FinanceService {
@@ -62,34 +63,38 @@ export class FinanceService {
       try {
         const client = this.supabase.getClient();
 
-        // 1. Revenue queries
-        const { data: todayRevData } = await client
-          .from('payments')
-          .select('amount')
-          .eq('status', 'success')
-          .gte('created_at', todayStr);
+        const [
+          { data: todayRevData },
+          { data: monthRevData },
+          { data: totalRevData },
+          { data: calls24 },
+          { data: payments24 },
+          { data: users24 },
+          { data: creatorCalls24 },
+          { data: creatorPayouts24 },
+          pendingCountResult,
+          { data: wPaid },
+        ] = await Promise.all([
+          client.from('payments').select('amount.sum()').eq('status', 'success').gte('created_at', todayStr),
+          client.from('payments').select('amount.sum()').eq('status', 'success').gte('created_at', monthStr),
+          client.from('payments').select('amount.sum(),coins_added.sum()').eq('status', 'success'),
+          client.from('calls').select('caller_id').gte('created_at', last24h),
+          client.from('payments').select('user_id').gte('created_at', last24h),
+          client.from('users').select('id').gte('created_at', last24h),
+          client.from('calls').select('creator_id').gte('created_at', last24h),
+          client.from('withdrawals').select('creator_id').gte('created_at', last24h),
+          client.from('withdrawals').select('*', { count: 'exact', head: true }).eq('status', 'pending'),
+          client.from('withdrawals').select('amount.sum(),id.count()').eq('status', 'paid'),
+        ]);
 
-        const { data: monthRevData } = await client
-          .from('payments')
-          .select('amount')
-          .eq('status', 'success')
-          .gte('created_at', monthStr);
+        const sumField = (row: Record<string, unknown> | undefined, field: string) =>
+          Number((row?.[field] as { sum?: number | null } | undefined)?.sum ?? row?.sum ?? 0);
 
-        const { data: totalRevData } = await client
-          .from('payments')
-          .select('amount, coins_added')
-          .eq('status', 'success');
+        const todayRevenue = sumField(todayRevData?.[0] as Record<string, unknown>, 'amount');
+        const monthlyRevenue = sumField(monthRevData?.[0] as Record<string, unknown>, 'amount');
+        const totalRevenue = sumField(totalRevData?.[0] as Record<string, unknown>, 'amount');
+        const coinsSold = sumField(totalRevData?.[0] as Record<string, unknown>, 'coins_added');
 
-        const todayRevenue = todayRevData?.reduce((sum, p) => sum + Number(p.amount), 0) || 0;
-        const monthlyRevenue = monthRevData?.reduce((sum, p) => sum + Number(p.amount), 0) || 0;
-        const totalRevenue = totalRevData?.reduce((sum, p) => sum + Number(p.amount), 0) || 0;
-        const coinsSold = totalRevData?.reduce((sum, p) => sum + Number(p.coins_added), 0) || 0;
-
-        // 2. Active users (distinct users with login/created_at, call or payment in last 24h)
-        const { data: calls24 } = await client.from('calls').select('caller_id').gte('created_at', last24h);
-        const { data: payments24 } = await client.from('payments').select('user_id').gte('created_at', last24h);
-        const { data: users24 } = await client.from('users').select('id').gte('created_at', last24h);
-        
         const activeUserIds = new Set([
           ...(calls24 || []).map(c => c.caller_id),
           ...(payments24 || []).map(p => p.user_id),
@@ -97,23 +102,19 @@ export class FinanceService {
         ]);
         const activeUsers = activeUserIds.size;
 
-        // 3. Active creators (calls or payouts in last 24h)
-        const { data: creatorCalls24 } = await client.from('calls').select('creator_id').gte('created_at', last24h);
-        const { data: creatorPayouts24 } = await client.from('withdrawals').select('creator_id').gte('created_at', last24h);
-        
         const activeCreatorIds = new Set([
           ...(creatorCalls24 || []).map(c => c.creator_id),
           ...(creatorPayouts24 || []).map(w => w.creator_id),
         ]);
         const activeCreators = activeCreatorIds.size;
 
-        // 4. Withdrawals
-        const { data: wPending } = await client.from('withdrawals').select('amount').eq('status', 'pending');
-        const { data: wPaid } = await client.from('withdrawals').select('amount').eq('status', 'paid');
-
-        const pendingWithdrawals = wPending?.length || 0;
-        const paidWithdrawals = wPaid?.length || 0;
-        const creatorPayouts = wPaid?.reduce((sum, w) => sum + Number(w.amount), 0) || 0;
+        const pendingWithdrawals = pendingCountResult.count ?? 0;
+        const paidAgg = (wPaid?.[0] ?? {}) as {
+          amount?: { sum: number | null };
+          id?: { count: number | null };
+        };
+        const paidWithdrawals = Number(paidAgg.id?.count ?? 0);
+        const creatorPayouts = Number(paidAgg.amount?.sum ?? 0);
         const platformProfit = totalRevenue - creatorPayouts;
 
         return {
@@ -217,27 +218,31 @@ export class FinanceService {
       try {
         const client = this.supabase.getClient();
 
-        const { data: dbPayments } = await client
-          .from('payments')
-          .select('amount, coins_added, created_at')
-          .eq('status', 'success')
-          .gte('created_at', startDateStr);
-
-        const { data: dbEarnings } = await client
-          .from('creator_earnings')
-          .select('creator_share, created_at')
-          .gte('created_at', startDateStr);
-
-        const { data: dbCalls } = await client
-          .from('calls')
-          .select('id, created_at')
-          .gte('created_at', startDateStr);
-
-        const { data: dbWithdrawals } = await client
-          .from('withdrawals')
-          .select('amount, created_at')
-          .eq('status', 'paid')
-          .gte('created_at', startDateStr);
+        const [
+          { data: dbPayments },
+          { data: dbEarnings },
+          { data: dbCalls },
+          { data: dbWithdrawals },
+        ] = await Promise.all([
+          client
+            .from('payments')
+            .select('amount, coins_added, created_at')
+            .eq('status', 'success')
+            .gte('created_at', startDateStr),
+          client
+            .from('creator_earnings')
+            .select('creator_share, created_at')
+            .gte('created_at', startDateStr),
+          client
+            .from('calls')
+            .select('id, created_at')
+            .gte('created_at', startDateStr),
+          client
+            .from('withdrawals')
+            .select('amount, created_at')
+            .eq('status', 'paid')
+            .gte('created_at', startDateStr),
+        ]);
 
         if (dbPayments) {
           for (const p of dbPayments) {
@@ -338,41 +343,67 @@ export class FinanceService {
         const client = this.supabase.getClient();
         const { data, error } = await client
           .from('creator_earnings')
-          .select(`
-            creator_id,
-            creator_share,
-            users (
-              name
-            ),
-            calls (
-              duration_seconds
-            )
-          `);
+          .select('creator_id, creator_share, call_id');
 
         if (error) throw error;
 
-        const creatorMap = new Map<string, any>();
+        const creatorMap = new Map<string, { creatorId: string; totalEarnings: number; totalCalls: number; callIds: Set<string> }>();
         if (data) {
           for (const row of data) {
-            const cid = row.creator_id;
-            const name = (row.users as any)?.name || 'Unknown';
+            const cid = row.creator_id as string;
             const earnings = Number(row.creator_share);
-            const durationSec = Number((row.calls as any)?.duration_seconds || 0);
-
             let item = creatorMap.get(cid);
             if (!item) {
-              item = { creatorName: name, creatorId: cid, totalEarnings: 0, totalCalls: 0, totalMinutes: 0 };
+              item = { creatorId: cid, totalEarnings: 0, totalCalls: 0, callIds: new Set() };
               creatorMap.set(cid, item);
             }
             item.totalEarnings += earnings;
             item.totalCalls += 1;
-            item.totalMinutes += durationSec / 60;
+            if (row.call_id) item.callIds.add(row.call_id as string);
           }
         }
 
-        return Array.from(creatorMap.values())
+        const top = Array.from(creatorMap.values())
           .sort((a, b) => b.totalEarnings - a.totalEarnings)
           .slice(0, 10);
+
+        const topCreatorIds = top.map((t) => t.creatorId);
+        const allCallIds = [...new Set(top.flatMap((t) => [...t.callIds]))];
+
+        const [{ data: userRows }, { data: callRows }] = await Promise.all([
+          topCreatorIds.length
+            ? client.from('users').select('id, name, full_name').in('id', topCreatorIds)
+            : Promise.resolve({ data: [] as Record<string, unknown>[] }),
+          allCallIds.length
+            ? client.from('calls').select('id, duration_seconds').in('id', allCallIds)
+            : Promise.resolve({ data: [] as Record<string, unknown>[] }),
+        ]);
+
+        const nameById = new Map<string, string>();
+        for (const u of userRows ?? []) {
+          nameById.set(
+            u.id as string,
+            (u.full_name as string) || (u.name as string) || 'Unknown',
+          );
+        }
+        const durationByCallId = new Map<string, number>();
+        for (const c of callRows ?? []) {
+          durationByCallId.set(c.id as string, Number(c.duration_seconds ?? 0));
+        }
+
+        return top.map((item) => {
+          let totalMinutes = 0;
+          for (const callId of item.callIds) {
+            totalMinutes += (durationByCallId.get(callId) ?? 0) / 60;
+          }
+          return {
+            creatorName: nameById.get(item.creatorId) || 'Unknown',
+            creatorId: item.creatorId,
+            totalEarnings: item.totalEarnings,
+            totalCalls: item.totalCalls,
+            totalMinutes,
+          };
+        });
       } catch (e) {
         console.warn('FinanceService.getTopCreators database error:', (e as Error).message);
       }
@@ -410,15 +441,10 @@ export class FinanceService {
     if (this.supabase.isConfigured) {
       try {
         const client = this.supabase.getClient();
-        const { data } = await client
-          .from('calls')
-          .select('status, duration_seconds, coins_spent');
-
-        // Total payments to sum coins sold
-        const { data: totalPayments } = await client
-          .from('payments')
-          .select('coins_added')
-          .eq('status', 'success');
+        const [{ data }, { data: totalPayments }] = await Promise.all([
+          client.from('calls').select('status, duration_seconds, coins_spent'),
+          client.from('payments').select('coins_added').eq('status', 'success'),
+        ]);
 
         const totalCalls = data?.length || 0;
         const completedCalls = data?.filter(c => c.status === 'ended').length || 0;
@@ -521,8 +547,16 @@ export class FinanceService {
 
         const { data } = await query;
         const headers = 'ID,User ID,Amount (₹),Coins Added,Gateway,Order ID,Date\n';
-        const rows = (data || []).map(r => 
-          `"${r.id}","${r.user_id}",${r.amount},${r.coins_added},"${r.gateway}","${r.gateway_order_id}","${r.created_at}"`
+        const rows = (data || []).map((r) =>
+          [
+            csvCell(r.id),
+            csvCell(r.user_id),
+            r.amount,
+            r.coins_added,
+            csvCell(r.gateway),
+            csvCell(r.gateway_order_id),
+            csvCell(r.created_at),
+          ].join(','),
         ).join('\n');
 
         return headers + rows;
@@ -542,8 +576,16 @@ export class FinanceService {
     });
 
     const headers = 'ID,User ID,Amount (₹),Coins Added,Gateway,Order ID,Date\n';
-    const rows = filtered.map(r =>
-      `"${r.id}","${r.userId}",${r.amount},${r.coins},"${r.gateway}","${r.gatewayOrderId}","${r.createdAt}"`
+    const rows = filtered.map((r) =>
+      [
+        csvCell(r.id),
+        csvCell(r.userId),
+        r.amount,
+        r.coins,
+        csvCell(r.gateway),
+        csvCell(r.gatewayOrderId),
+        csvCell(r.createdAt),
+      ].join(','),
     ).join('\n');
 
     return headers + rows;
@@ -565,8 +607,16 @@ export class FinanceService {
 
         const { data } = await query;
         const headers = 'ID,Call ID,Creator ID,Gross Amount (Coins),Creator Share (Coins),Platform Share (Coins),Date\n';
-        const rows = (data || []).map(r => 
-          `"${r.id}","${r.call_id || ''}","${r.creator_id}",${r.gross_amount},${r.creator_share},${r.platform_share},"${r.created_at}"`
+        const rows = (data || []).map((r) =>
+          [
+            csvCell(r.id),
+            csvCell(r.call_id || ''),
+            csvCell(r.creator_id),
+            r.gross_amount,
+            r.creator_share,
+            r.platform_share,
+            csvCell(r.created_at),
+          ].join(','),
         ).join('\n');
 
         return headers + rows;
@@ -585,8 +635,16 @@ export class FinanceService {
     });
 
     const headers = 'ID,Call ID,Creator ID,Gross Amount (Coins),Creator Share (Coins),Platform Share (Coins),Date\n';
-    const rows = filtered.map(r => 
-      `"${r.id}","${r.callId || ''}","${r.creatorId}",${r.grossAmount},${r.creatorShare},${r.platformShare},"${r.createdAt}"`
+    const rows = filtered.map((r) =>
+      [
+        csvCell(r.id),
+        csvCell(r.callId || ''),
+        csvCell(r.creatorId),
+        r.grossAmount,
+        r.creatorShare,
+        r.platformShare,
+        csvCell(r.createdAt),
+      ].join(','),
     ).join('\n');
 
     return headers + rows;
@@ -608,9 +666,16 @@ export class FinanceService {
 
         const { data } = await query;
         const headers = 'ID,Creator ID,Amount (₹),Status,Method,Requested At\n';
-        const rows = (data || []).map(r => {
+        const rows = (data || []).map((r) => {
           const method = r.upi_id ? 'UPI' : 'Bank Transfer';
-          return `"${r.id}","${r.creator_id}",${r.amount},"${r.status}","${method}","${r.created_at}"`;
+          return [
+            csvCell(r.id),
+            csvCell(r.creator_id),
+            r.amount,
+            csvCell(r.status),
+            csvCell(method),
+            csvCell(r.created_at),
+          ].join(',');
         }).join('\n');
 
         return headers + rows;
@@ -629,9 +694,16 @@ export class FinanceService {
     });
 
     const headers = 'ID,Creator ID,Amount (₹),Status,Method,Requested At\n';
-    const rows = filtered.map(r => {
+    const rows = filtered.map((r) => {
       const method = r.upiId ? 'UPI' : 'Bank Transfer';
-      return `"${r.id}","${r.creatorId}",${r.amount},"${r.status}","${method}","${r.createdAt}"`;
+      return [
+        csvCell(r.id),
+        csvCell(r.creatorId),
+        r.amount,
+        csvCell(r.status),
+        csvCell(method),
+        csvCell(r.createdAt),
+      ].join(',');
     }).join('\n');
 
     return headers + rows;

@@ -15,6 +15,7 @@ import {
   UpdateGiftDto,
 } from './dto/gift.dto';
 import { GiftRepository } from './gift.repository';
+import { MissionProgressHook } from '../engagement/mission-progress.hook';
 
 const RPC_ERROR_MAP: Record<string, string> = {
   sender_not_found: 'Sender not found',
@@ -43,6 +44,7 @@ export class GiftService {
     private readonly repository: GiftRepository,
     private readonly usersService: UsersService,
     private readonly fcmService: FcmService,
+    private readonly missionHook: MissionProgressHook,
   ) {}
 
   private requireSupabase(): void {
@@ -124,8 +126,14 @@ export class GiftService {
       });
 
       if (!result.duplicate) {
+        await this.missionHook.onGiftSent(
+          senderUserId,
+          String(result.gift_transaction_id),
+        );
         const creatorFcm = await this.repository.getUserFcmToken(dto.creatorId);
         if (creatorFcm) {
+          const combo = result.combo as Record<string, unknown> | undefined;
+          const giftMeta = result.gift as Record<string, unknown> | undefined;
           await this.fcmService.sendGiftReceived({
             fcmToken: creatorFcm,
             giftTransactionId: result.gift_transaction_id,
@@ -135,9 +143,14 @@ export class GiftService {
             giftName: result.gift_name,
             giftCoins: Number(result.coins_spent),
             creatorCoins: Number(result.creator_coins),
+            comboCount: combo ? Number(combo.combo_index ?? combo.comboIndex ?? 1) : 1,
+            isPremium: Boolean(giftMeta?.isPremium ?? giftMeta?.is_premium),
           });
         }
       }
+
+      const comboRaw = result.combo as Record<string, unknown> | undefined;
+      const giftRaw = result.gift as Record<string, unknown> | undefined;
 
       return {
         success: Boolean(result.success),
@@ -148,6 +161,27 @@ export class GiftService {
         platformCoins: Number(result.platform_coins),
         giftTransactionId: result.gift_transaction_id,
         duplicate: Boolean(result.duplicate),
+        combo: comboRaw
+          ? {
+              comboGroupId: String(comboRaw.combo_group_id ?? comboRaw.comboGroupId ?? ''),
+              comboIndex: Number(comboRaw.combo_index ?? comboRaw.comboIndex ?? 1),
+              isContinuation: Boolean(
+                comboRaw.is_continuation ?? comboRaw.isContinuation,
+              ),
+              comboWindowMs: Number(
+                comboRaw.combo_window_ms ?? comboRaw.comboWindowMs ?? 10000,
+              ),
+            }
+          : undefined,
+        gift: giftRaw
+          ? {
+              isPremium: Boolean(giftRaw.isPremium ?? giftRaw.is_premium),
+              campaignKey: giftRaw.campaignKey ?? giftRaw.campaign_key,
+              premiumGiftId: giftRaw.premiumGiftId ?? giftRaw.premium_gift_id,
+              displayTier: giftRaw.displayTier ?? giftRaw.display_tier,
+              badgeLabel: giftRaw.badgeLabel ?? giftRaw.badge_label,
+            }
+          : undefined,
       };
     } catch (e) {
       this.mapRpcError((e as Error).message);
@@ -156,7 +190,14 @@ export class GiftService {
 
   async getSenderHistory(senderUserId: string) {
     this.requireSupabase();
-    return this.repository.listSenderHistory(senderUserId);
+    try {
+      return await this.repository.listSenderHistory(senderUserId);
+    } catch (e) {
+      if (e instanceof BadRequestException) throw e;
+      throw new ServiceUnavailableException(
+        'Unable to load gift history',
+      );
+    }
   }
 
   async getCreatorGiftStats(creatorUserId: string) {

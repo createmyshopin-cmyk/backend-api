@@ -6,26 +6,25 @@ import {
 import * as crypto from 'crypto';
 import { SupabaseService } from '../supabase/supabase.service';
 import { createRazorpayClient, RazorpayInstance } from '../payments/razorpay-client';
+import { getPlatformConfig } from '../startup/platform-config';
 import { VipRpcService } from './vip-rpc.service';
 import { VipSubscribeDto } from './dto/vip.dto';
-import { isMissingEngagementSchema, logEngagementFallback } from './engagement-fallbacks';
 
 const VALID_TIERS = new Set(['silver', 'gold', 'platinum']);
 
 @Injectable()
 export class VipService {
   private razorpay: RazorpayInstance | null = null;
-  private readonly razorpayKeyId = process.env.RAZORPAY_KEY_ID?.trim() ?? '';
-  private readonly razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET?.trim() ?? '';
 
   constructor(
     private readonly supabase: SupabaseService,
     private readonly vipRpc: VipRpcService,
   ) {
-    if (this.razorpayKeyId && this.razorpayKeySecret) {
+    const { razorpay } = getPlatformConfig();
+    if (razorpay.keyId && razorpay.keySecret) {
       this.razorpay = createRazorpayClient({
-        key_id: this.razorpayKeyId,
-        key_secret: this.razorpayKeySecret,
+        key_id: razorpay.keyId,
+        key_secret: razorpay.keySecret,
       });
     }
   }
@@ -45,39 +44,21 @@ export class VipService {
         ],
       };
     }
-    try {
-      return await this.vipRpc.getVipPlans();
-    } catch (e) {
-      if (!isMissingEngagementSchema(e)) throw e;
-      logEngagementFallback('getVipPlans', e);
-      return { plans: [] };
-    }
+    return this.vipRpc.getVipPlans();
   }
 
   async getStatus(userId: string) {
     if (!this.supabase.isConfigured) {
       return { active: false, tier: null, perks: {} };
     }
-    try {
-      return await this.vipRpc.getVipStatus(userId);
-    } catch (e) {
-      if (!isMissingEngagementSchema(e)) throw e;
-      logEngagementFallback('getVipStatus', e);
-      return { active: false, tier: null, perks: {} };
-    }
+    return this.vipRpc.getVipStatus(userId);
   }
 
   async getHistory(userId: string, limit?: number) {
     if (!this.supabase.isConfigured) {
       return { items: [] };
     }
-    try {
-      return await this.vipRpc.getVipHistory(userId, limit ?? 20);
-    } catch (e) {
-      if (!isMissingEngagementSchema(e)) throw e;
-      logEngagementFallback('getVipHistory', e);
-      return { items: [] };
-    }
+    return this.vipRpc.getVipHistory(userId, limit ?? 20);
   }
 
   async subscribe(userId: string, dto: VipSubscribeDto, idempotencyKey: string) {
@@ -143,7 +124,7 @@ export class VipService {
         },
         razorpayOrder: {
           ...razorpayOrder,
-          keyId: this.razorpayKeyId,
+          keyId: getPlatformConfig().razorpay.keyId ?? '',
         },
       };
     }
@@ -160,7 +141,7 @@ export class VipService {
       membership: initiated,
       razorpayOrder: {
         ...razorpayOrder,
-        keyId: this.razorpayKeyId,
+        keyId: getPlatformConfig().razorpay.keyId ?? '',
       },
     };
   }
@@ -200,7 +181,7 @@ export class VipService {
     paymentId: string,
     signature: string,
   ): void {
-    const keySecret = this.razorpayKeySecret;
+    const keySecret = getPlatformConfig().razorpay.keySecret;
     if (!keySecret) return;
     const expected = crypto
       .createHmac('sha256', keySecret)

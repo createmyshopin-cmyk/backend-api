@@ -13,7 +13,6 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/auth.guard';
-import { AppUserGuard } from '../auth/app-user.guard';
 import { RewardsQueryDto } from './dto/engagement.dto';
 import { VipSubscribeDto } from './dto/vip.dto';
 import { VipService } from './vip.service';
@@ -24,7 +23,7 @@ interface AuthenticatedRequest {
 
 @ApiTags('Engagement VIP')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, AppUserGuard)
+@UseGuards(JwtAuthGuard)
 @Controller('engagement/vip')
 export class VipController {
   private readonly logger = new Logger(VipController.name);

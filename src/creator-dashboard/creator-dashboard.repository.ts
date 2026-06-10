@@ -9,11 +9,6 @@ import {
   maskBankAccount,
   maskUpi,
 } from './pagination.util';
-import {
-  aggregateLiveAnalytics,
-  istRangeBounds,
-  isEmptyAnalyticsMetrics,
-} from './creator-analytics-live.util';
 import type {
   AnalyticsMetrics,
   CallHistoryRow,
@@ -88,7 +83,7 @@ export class CreatorDashboardRepository {
   }
 
   async getAnalyticsWindow(
-    scope: CreatorRequestScope,
+    profileId: string,
     fromDate: string,
     toDate: string,
   ): Promise<{ metrics: AnalyticsMetrics; chart: ChartDayPoint[] }> {
@@ -96,51 +91,41 @@ export class CreatorDashboardRepository {
       return { metrics: this.zeroMetrics(), chart: [] };
     }
 
-    let metrics = this.zeroMetrics();
-    let chart: ChartDayPoint[] = [];
-
     try {
       const window = await this.analyticsRpc.getCreatorAnalyticsWindow(
-        scope.creatorProfileId,
+        profileId,
         fromDate,
         toDate,
       );
-      metrics = {
-        totalEarnings: window.totalCoins,
-        callEarnings: window.callCoins,
-        giftEarnings: window.giftCoins,
-        callCount: window.callCount,
-        giftCount: window.giftsReceivedCount,
-        talkMinutes: this.secondsToTalkMinutes(window.callDurationSeconds),
+      return {
+        metrics: {
+          totalEarnings: window.totalCoins,
+          callEarnings: window.callCoins,
+          giftEarnings: window.giftCoins,
+          callCount: window.callCount,
+          giftCount: window.giftsReceivedCount,
+          talkMinutes: Math.floor(window.callDurationSeconds / 60),
+        },
+        chart: window.dailySeries.map((d) => ({
+          date: d.date,
+          totalEarnings: d.totalCoins,
+          callEarnings: d.callCoins,
+          giftEarnings: d.giftCoins,
+          callCount: d.callCount,
+          giftCount: d.giftsReceivedCount,
+        })),
       };
-      chart = window.dailySeries.map((d) => ({
-        date: d.date,
-        totalEarnings: d.totalCoins,
-        callEarnings: d.callCoins,
-        giftEarnings: d.giftCoins,
-        callCount: d.callCount,
-        giftCount: d.giftsReceivedCount,
-      }));
     } catch (e) {
-      this.logger.warn(
-        `analytics window failed for ${scope.creatorProfileId} (${fromDate}..${toDate}): ${(e as Error).message}`,
-      );
+      this.logger.warn(`analytics window failed: ${(e as Error).message}`);
+      throw new ServiceUnavailableException({
+        statusCode: 503,
+        code: 'dashboard_unavailable',
+        message: 'Unable to load analytics data',
+      });
     }
-
-    if (isEmptyAnalyticsMetrics(metrics)) {
-      const live = await this.fetchLiveAnalyticsWindow(scope, fromDate, toDate);
-      if (!isEmptyAnalyticsMetrics(live.metrics)) {
-        this.logger.log(
-          `analytics live fallback for ${scope.creatorProfileId} (${fromDate}..${toDate})`,
-        );
-        return live;
-      }
-    }
-
-    return { metrics, chart };
   }
 
-  async getLifetimeCounts(scope: CreatorRequestScope): Promise<{
+  async getLifetimeCounts(profileId: string): Promise<{
     callCount: number;
     giftCount: number;
     talkMinutes: number;
@@ -149,54 +134,22 @@ export class CreatorDashboardRepository {
       return { callCount: 0, giftCount: 0, talkMinutes: 0 };
     }
 
-    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-    const window = await this.getAnalyticsWindow(scope, '1970-01-01', today);
+    const { data, error } = await this.supabase.getClient().rpc('get_creator_analytics_window', {
+      p_creator_profile_id: profileId,
+      p_from_date: '1970-01-01',
+      p_to_date: null,
+    });
+
+    if (error || !data) {
+      return { callCount: 0, giftCount: 0, talkMinutes: 0 };
+    }
+
+    const row = data as Record<string, unknown>;
     return {
-      callCount: window.metrics.callCount,
-      giftCount: window.metrics.giftCount,
-      talkMinutes: window.metrics.talkMinutes,
+      callCount: Number(row.call_count ?? 0),
+      giftCount: Number(row.gifts_received_count ?? 0),
+      talkMinutes: Math.floor(Number(row.call_duration_seconds ?? 0) / 60),
     };
-  }
-
-  private async fetchLiveAnalyticsWindow(
-    scope: CreatorRequestScope,
-    fromDate: string,
-    toDate: string,
-  ): Promise<{ metrics: AnalyticsMetrics; chart: ChartDayPoint[] }> {
-    const client = this.supabase.getClient();
-    const { from, to } = istRangeBounds(fromDate, toDate);
-
-    const [giftsResult, callsResult] = await Promise.all([
-      client
-        .from('gift_transactions')
-        .select('creator_coins, created_at')
-        .eq('creator_id', scope.creatorProfileId)
-        .gte('created_at', from)
-        .lte('created_at', to),
-      client
-        .from('calls')
-        .select(
-          'duration_seconds, billable_duration_seconds, started_at, creator_earnings(creator_share)',
-        )
-        .eq('creator_id', scope.userId)
-        .in('status', ['ended', 'completed'])
-        .gte('started_at', from)
-        .lte('started_at', to),
-    ]);
-
-    if (giftsResult.error) {
-      this.logger.warn(`live gift analytics failed: ${giftsResult.error.message}`);
-    }
-    if (callsResult.error) {
-      this.logger.warn(`live call analytics failed: ${callsResult.error.message}`);
-    }
-
-    return aggregateLiveAnalytics(
-      (giftsResult.data ?? []) as Parameters<typeof aggregateLiveAnalytics>[0],
-      (callsResult.data ?? []) as Parameters<typeof aggregateLiveAnalytics>[1],
-      fromDate,
-      toDate,
-    );
   }
 
   async fetchCallHistory(
@@ -470,10 +423,6 @@ export class CreatorDashboardRepository {
       giftEarningsTotal: 0,
       asOf: now,
     };
-  }
-
-  private secondsToTalkMinutes(seconds: number): number {
-    return seconds > 0 ? Math.ceil(seconds / 60) : 0;
   }
 
   private zeroMetrics(): AnalyticsMetrics {

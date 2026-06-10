@@ -10,6 +10,7 @@ import { UsersService } from '../users/users.service';
 import { SupabaseService } from '../supabase/supabase.service';
 import { GiftRepository } from './gift.repository';
 import { GiftService } from './gift.service';
+import { MissionProgressHook } from '../engagement/mission-progress.hook';
 
 const VALID_IDEM = '550e8400-e29b-41d4-a716-446655440000';
 
@@ -51,6 +52,14 @@ describe('GiftService', () => {
           useValue: {
             sendGiftReceived: jest.fn(),
             sendGiftReply: jest.fn(),
+          },
+        },
+        {
+          provide: MissionProgressHook,
+          useValue: {
+            onGiftSent: jest.fn(),
+            onCallCompleted: jest.fn(),
+            onWalletRecharge: jest.fn(),
           },
         },
       ],

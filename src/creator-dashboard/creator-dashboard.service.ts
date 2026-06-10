@@ -49,16 +49,16 @@ export class CreatorDashboardService {
       this.repository.getWallet(scope),
     );
     const todayTimed = timed(this.logger, SCOPE, 'analytics:today', () =>
-      this.safeAnalyticsWindow(scope, today, today),
+      this.repository.getAnalyticsWindow(scope.creatorProfileId, today, today),
     );
     const w7Timed = timed(this.logger, SCOPE, 'analytics:7d', () =>
-      this.safeAnalyticsWindow(scope, from7, today),
+      this.repository.getAnalyticsWindow(scope.creatorProfileId, from7, today),
     );
     const w30Timed = timed(this.logger, SCOPE, 'analytics:30d', () =>
-      this.safeAnalyticsWindow(scope, from30, today),
+      this.repository.getAnalyticsWindow(scope.creatorProfileId, from30, today),
     );
     const lifetimeCountsTimed = timed(this.logger, SCOPE, 'analytics:lifetime_counts', () =>
-      this.repository.getLifetimeCounts(scope),
+      this.repository.getLifetimeCounts(scope.creatorProfileId),
     );
 
     const [walletR, todayR, w7R, w30R, lifetimeR] = await Promise.all([
@@ -80,16 +80,9 @@ export class CreatorDashboardService {
     const wallet = walletR.result;
     const chart7 = this.normalizeChart7(w7R.result.chart, today);
 
-    const lifetimeCallEarnings =
-      wallet.callEarningsTotal > 0
-        ? wallet.callEarningsTotal
-        : lifetimeR.result.callCount > 0
-          ? Math.max(0, wallet.totalEarned - wallet.giftEarningsTotal)
-          : 0;
-
     const lifetime: AnalyticsMetrics = {
       totalEarnings: wallet.totalEarned,
-      callEarnings: lifetimeCallEarnings,
+      callEarnings: wallet.callEarningsTotal,
       giftEarnings: wallet.giftEarningsTotal,
       callCount: lifetimeR.result.callCount,
       giftCount: lifetimeR.result.giftCount,
@@ -284,31 +277,6 @@ export class CreatorDashboardService {
       items,
       pageInfo,
     };
-  }
-
-  private async safeAnalyticsWindow(
-    scope: CreatorRequestScope,
-    fromDate: string,
-    toDate: string,
-  ): Promise<{ metrics: AnalyticsMetrics; chart: ChartDayPoint[] }> {
-    try {
-      return await this.repository.getAnalyticsWindow(scope, fromDate, toDate);
-    } catch (e) {
-      this.logger.warn(
-        `safeAnalyticsWindow fallback for ${scope.creatorProfileId}: ${(e as Error).message}`,
-      );
-      return {
-        metrics: {
-          totalEarnings: 0,
-          callEarnings: 0,
-          giftEarnings: 0,
-          callCount: 0,
-          giftCount: 0,
-          talkMinutes: 0,
-        },
-        chart: [],
-      };
-    }
   }
 
   private buildRestrictions(scope: CreatorRequestScope) {

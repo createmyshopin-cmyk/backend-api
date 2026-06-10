@@ -5,15 +5,11 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { isMissingEngagementSchema } from './engagement-fallbacks';
 
 const logger = new Logger('EngagementErrors');
 
 export function mapEngagementRpcError(error: { message?: string; code?: string }, rpc: string): never {
   const msg = error.message ?? 'unknown_error';
-  if (isMissingEngagementSchema(error)) {
-    throw error;
-  }
   logger.warn(`${rpc}: ${msg}`);
 
   if (msg.includes('creator_not_found')) {

@@ -52,3 +52,17 @@ export class MarkPaidDto {
   @IsOptional()
   notes?: string;
 }
+
+export class FailWithdrawalDto {
+  @ApiProperty({ example: 'Bank account invalid' })
+  @IsString()
+  @IsNotEmpty()
+  reason: string;
+}
+
+export class CancelWithdrawalDto {
+  @ApiProperty({ example: 'Changed mind', required: false })
+  @IsString()
+  @IsOptional()
+  reason?: string;
+}

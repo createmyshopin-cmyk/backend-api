@@ -1,7 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { UpdateSettingsDto, MaintenanceToggleDto } from './dto/admin.dto';
 import { SupabaseService } from '../supabase/supabase.service';
 import { CreatorsService } from '../creators/creators.service';
+import { logParallelSummary, timed, type TimedResult } from '../common/query-timer';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -30,8 +31,12 @@ export interface AdminAccount {
   joinedAt: string;
 }
 
+const DASHBOARD_SCOPE = 'admin/dashboard';
+
 @Injectable()
 export class AdminService {
+  private readonly logger = new Logger(AdminService.name);
+
   private settings: SystemSettings = {
     appName: 'CoinCalling',
     supportEmail: 'support@coincalling.com',
@@ -189,61 +194,105 @@ export class AdminService {
   }
 
   async getDashboardStats() {
+    const requestStart = performance.now();
+
     if (this.supabase.isConfigured) {
       try {
+        const clientAcquireStart = performance.now();
         const client = this.supabase.getClient();
-
-        const { count: totalUsers } = await client
-          .from('users')
-          .select('*', { count: 'exact', head: true });
-
-        const { count: totalListeners } = await client
-          .from('users')
-          .select('*', { count: 'exact', head: true })
-          .eq('is_creator', true);
-
-        const { count: pendingApplications } = await client
-          .from('users')
-          .select('id, creator_profiles!inner()')
-          .eq('is_creator', false);
-
-        const { count: activeListenersOnline } = await client
-          .from('creator_profiles')
-          .select('*', { count: 'exact', head: true })
-          .or('is_online.eq.true,online_status.eq.true');
-
-        const { count: totalCalls } = await client
-          .from('calls')
-          .select('*', { count: 'exact', head: true });
+        const clientAcquireMs = Math.round(performance.now() - clientAcquireStart);
+        this.logger.log(
+          `[${DASHBOARD_SCOPE}] supabase.getClient() ${clientAcquireMs}ms (singleton, no pool acquire)`,
+        );
 
         const todayStart = new Date();
         todayStart.setHours(0, 0, 0, 0);
-        const { count: todaysCalls } = await client
-          .from('calls')
-          .select('*', { count: 'exact', head: true })
-          .gte('created_at', todayStart.toISOString());
+        const todayIso = todayStart.toISOString();
 
-        const { data: callCoins } = await client
-          .from('calls')
-          .select('coins_spent, coins_deducted');
-        const totalCoinsSpent = (callCoins ?? []).reduce(
-          (sum, c) => sum + (c.coins_spent ?? c.coins_deducted ?? 0),
-          0,
-        );
+        const parallelStart = performance.now();
+        const queryResults = await Promise.all([
+          timed(this.logger, DASHBOARD_SCOPE, 'db:users.count_all', async () =>
+            client.from('users').select('*', { count: 'exact', head: true }),
+          ),
+          timed(this.logger, DASHBOARD_SCOPE, 'db:users.count_creators', async () =>
+            client.from('users').select('*', { count: 'exact', head: true }).eq('is_creator', true),
+          ),
+          timed(this.logger, DASHBOARD_SCOPE, 'db:users.count_pending_apps', async () =>
+            client
+              .from('users')
+              .select('id, creator_profiles!inner()', { count: 'exact', head: true })
+              .eq('is_creator', false),
+          ),
+          timed(this.logger, DASHBOARD_SCOPE, 'db:creator_profiles.count_online', async () =>
+            client
+              .from('creator_profiles')
+              .select('*', { count: 'exact', head: true })
+              .or('is_online.eq.true,online_status.eq.true'),
+          ),
+          timed(this.logger, DASHBOARD_SCOPE, 'db:calls.count_all', async () =>
+            client.from('calls').select('*', { count: 'exact', head: true }),
+          ),
+          timed(this.logger, DASHBOARD_SCOPE, 'db:calls.count_today', async () =>
+            client
+              .from('calls')
+              .select('*', { count: 'exact', head: true })
+              .gte('created_at', todayIso),
+          ),
+          timed(this.logger, DASHBOARD_SCOPE, 'db:calls.sum_coins_spent', async () =>
+            client.from('calls').select('coins_spent.sum(),coins_deducted.sum()'),
+          ),
+          timed(this.logger, DASHBOARD_SCOPE, 'db:payments.sum_success_amounts', async () =>
+            client.from('payments').select('amount.sum()').eq('status', 'success'),
+          ),
+          timed(this.logger, DASHBOARD_SCOPE, 'db:withdrawals.count_pending', async () =>
+            client
+              .from('withdrawals')
+              .select('*', { count: 'exact', head: true })
+              .eq('status', 'pending'),
+          ),
+        ]);
+        const parallelWallMs = Math.round(performance.now() - parallelStart);
+        logParallelSummary(this.logger, DASHBOARD_SCOPE, parallelWallMs, queryResults as TimedResult<unknown>[]);
 
-        const { data: successfulPayments } = await client
-          .from('payments')
-          .select('amount')
-          .eq('status', 'success');
-        const platformRevenue = (successfulPayments ?? []).reduce(
-          (sum, p) => sum + Number(p.amount ?? 0),
-          0,
-        );
+        const [
+          totalUsersResult,
+          totalListenersResult,
+          pendingApplicationsResult,
+          activeListenersOnlineResult,
+          totalCallsResult,
+          todaysCallsResult,
+          callCoinsResult,
+          successfulPaymentsResult,
+          pendingWithdrawalsResult,
+        ] = queryResults;
 
-        const { count: pendingWithdrawals } = await client
-          .from('withdrawals')
-          .select('*', { count: 'exact', head: true })
-          .eq('status', 'pending');
+        const { count: totalUsers } = totalUsersResult.result;
+        const { count: totalListeners } = totalListenersResult.result;
+        const { count: pendingApplications } = pendingApplicationsResult.result;
+        const { count: activeListenersOnline } = activeListenersOnlineResult.result;
+        const { count: totalCalls } = totalCallsResult.result;
+        const { count: todaysCalls } = todaysCallsResult.result;
+        const { data: callCoinSums } = callCoinsResult.result;
+        const { data: paymentSums } = successfulPaymentsResult.result;
+        const { count: pendingWithdrawals } = pendingWithdrawalsResult.result;
+
+        const callAgg = (callCoinSums?.[0] ?? {}) as {
+          sum?: number | null;
+          coins_spent?: { sum: number | null };
+          coins_deducted?: { sum: number | null };
+        };
+        const spentSum =
+          Number(callAgg.coins_spent?.sum ?? callAgg.sum ?? 0) +
+          Number(callAgg.coins_deducted?.sum ?? 0);
+        const totalCoinsSpent = spentSum;
+        const payAgg = (paymentSums?.[0] ?? {}) as {
+          sum?: number | null;
+          amount?: { sum: number | null };
+        };
+        const platformRevenue = Number(payAgg.amount?.sum ?? payAgg.sum ?? 0);
+
+        const totalMs = Math.round(performance.now() - requestStart);
+        this.logger.log(`[${DASHBOARD_SCOPE}] getDashboardStats total=${totalMs}ms`);
 
         return {
           totalUsers: totalUsers ?? 0,
@@ -257,12 +306,19 @@ export class AdminService {
           pendingWithdrawals: pendingWithdrawals ?? 0,
         };
       } catch (e) {
-        console.warn('AdminService.getDashboardStats Supabase error:', (e as Error).message);
+        const totalMs = Math.round(performance.now() - requestStart);
+        this.logger.warn(
+          `[${DASHBOARD_SCOPE}] getDashboardStats failed after ${totalMs}ms — ${(e as Error).message}`,
+        );
       }
     }
 
+    this.logger.log(`[${DASHBOARD_SCOPE}] using in-memory fallback (supabase unconfigured or errored)`);
+    const fallbackStart = performance.now();
     const activeOnlineCount = (await this.creatorsService.getActive()).filter(c => c.isOnline).length;
     const pendingCount = (await this.creatorsService.getPending()).length;
+    const fallbackMs = Math.round(performance.now() - fallbackStart);
+    this.logger.log(`[${DASHBOARD_SCOPE}] fallback creatorsService ${fallbackMs}ms`);
 
     return {
       totalUsers: 15,

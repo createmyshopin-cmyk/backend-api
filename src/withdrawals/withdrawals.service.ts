@@ -1,66 +1,57 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { CreatorsService } from '../creators/creators.service';
+import { WithdrawalRpcService } from './withdrawal-rpc.service';
+import {
+  clampLimit,
+  decodeCursor,
+  encodeCursor,
+} from '../creator-dashboard/pagination.util';
+import { csvCell } from '../common/csv.util';
+import type { AdminWithdrawalListQueryDto } from './dto/admin-withdrawal-query.dto';
+
+const MAX_WITHDRAWAL_EXPORT_ROWS = 10_000;
+
+export type WithdrawalStatus =
+  | 'pending'
+  | 'approved'
+  | 'paid'
+  | 'rejected'
+  | 'cancelled'
+  | 'failed';
 
 export interface Withdrawal {
   id: string;
   creatorId: string;
   amount: number;
-  status: 'pending' | 'approved' | 'rejected' | 'paid';
+  status: WithdrawalStatus;
   bankAccountName?: string;
   bankAccountNumber?: string;
   bankIfsc?: string;
   upiId?: string;
   adminNotes?: string;
   paymentReference?: string;
+  failureReason?: string;
+  cancellationReason?: string;
   requestedAt: string;
   approvedAt?: string;
   paidAt?: string;
+  rejectedAt?: string;
+  failedAt?: string;
+  cancelledAt?: string;
   createdAt: string;
   updatedAt: string;
-}
-
-export interface CreatorTransaction {
-  id: string;
-  creatorId: string;
-  type: 'earning' | 'withdrawal' | 'adjustment';
-  amount: number;
-  balanceBefore: number;
-  balanceAfter: number;
-  referenceId?: string;
-  createdAt: string;
+  idempotentReplay?: boolean;
 }
 
 @Injectable()
 export class WithdrawalsService {
-  private memWithdrawals: Withdrawal[] = [];
-  private memTransactions: CreatorTransaction[] = [];
-
   constructor(
     private readonly supabase: SupabaseService,
     private readonly creatorsService: CreatorsService,
+    private readonly withdrawalRpc: WithdrawalRpcService,
   ) {}
 
-  /**
-   * Helper to translate user's user_id to creator_profiles.id
-   */
-  private async getCreatorProfileId(userId: string, client: any): Promise<string> {
-    try {
-      const { data: profile } = await client
-        .from('creator_profiles')
-        .select('id')
-        .eq('user_id', userId)
-        .maybeSingle();
-      return profile ? profile.id : userId;
-    } catch (e) {
-      console.warn('Failed to translate user_id to profile_id, using fallback:', (e as Error).message);
-      return userId;
-    }
-  }
-
-  /**
-   * Fetch minimum withdrawal amount from settings or default to ₹100
-   */
   async getMinWithdrawalLimit(): Promise<number> {
     if (this.supabase.isConfigured) {
       try {
@@ -73,62 +64,46 @@ export class WithdrawalsService {
         if (!error && data && data.min_withdrawal !== null) {
           return Number(data.min_withdrawal);
         }
-      } catch (e) {
-        console.warn('Failed to fetch min_withdrawal from app_settings:', (e as Error).message);
+      } catch {
+        /* default */
       }
     }
-    return 100; // Default: ₹100
+    return 100;
   }
 
-  /**
-   * GET /api/withdrawals/my
-   * Returns current creator's withdrawals
-   */
   async getMyWithdrawals(creatorId: string): Promise<Withdrawal[]> {
-    if (this.supabase.isConfigured) {
-      try {
-        const { data, error } = await this.supabase
-          .getClient()
-          .from('withdrawals')
-          .select('*')
-          .eq('creator_id', creatorId)
-          .order('created_at', { ascending: false });
-
-        if (!error && data) {
-          return data.map(row => this.mapDbRowToWithdrawal(row));
-        }
-        console.warn('WithdrawalsService.getMyWithdrawals Supabase error:', error?.message);
-      } catch (e) {
-        console.warn('WithdrawalsService.getMyWithdrawals exception:', (e as Error).message);
-      }
+    if (!this.supabase.isConfigured) {
+      throw new BadRequestException('Withdrawals require Supabase');
     }
 
-    return this.memWithdrawals
-      .filter(w => w.creatorId === creatorId)
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const { data, error } = await this.supabase
+      .getClient()
+      .from('withdrawals')
+      .select('*')
+      .eq('creator_id', creatorId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw new BadRequestException(`Failed to fetch withdrawals: ${error.message}`);
+    }
+    return (data ?? []).map((row) => this.mapDbRowToWithdrawal(row));
   }
 
-  /**
-   * GET /api/withdrawals/balance
-   * Returns availableBalance, totalEarned, totalWithdrawn
-   */
   async getCreatorBalance(creatorId: string) {
     const wallet = await this.creatorsService.getWalletBalance(creatorId);
     return {
       availableBalance: wallet.availableBalance,
+      lockedBalance: wallet.lockedBalance ?? 0,
       totalEarned: wallet.totalEarned,
       totalWithdrawn: wallet.withdrawnAmount,
     };
   }
 
-  /**
-   * POST /api/withdrawals/request
-   * Creates a pending withdrawal request
-   */
   async createWithdrawalRequest(
     creatorId: string,
     amount: number,
     paymentMethod: string,
+    idempotencyKey: string | undefined,
     bankDetails?: {
       accountName?: string;
       accountNumber?: string;
@@ -136,14 +111,8 @@ export class WithdrawalsService {
     },
     upiId?: string,
   ): Promise<Withdrawal> {
-    const minLimit = await this.getMinWithdrawalLimit();
-    if (amount < minLimit) {
-      throw new BadRequestException(`Minimum withdrawal amount is ₹${minLimit}`);
-    }
-
-    const wallet = await this.creatorsService.getWalletBalance(creatorId);
-    if (amount > wallet.availableBalance) {
-      throw new BadRequestException(`Withdrawal amount ₹${amount} exceeds available balance ₹${wallet.availableBalance}`);
+    if (!idempotencyKey?.trim()) {
+      throw new BadRequestException('Idempotency-Key header is required for withdrawal requests');
     }
 
     if (paymentMethod === 'bank') {
@@ -158,332 +127,275 @@ export class WithdrawalsService {
       throw new BadRequestException('Invalid payment method. Use "upi" or "bank"');
     }
 
-    if (this.supabase.isConfigured) {
-      try {
-        const client = this.supabase.getClient();
-        const { data, error } = await client
-          .from('withdrawals')
-          .insert({
-            creator_id: creatorId,
-            amount: amount,
-            status: 'pending',
-            bank_account_name: bankDetails?.accountName || null,
-            bank_account_number: bankDetails?.accountNumber || null,
-            bank_ifsc: bankDetails?.ifsc || null,
-            upi_id: upiId || null,
-          })
-          .select()
-          .single();
-
-        if (error) {
-          throw new BadRequestException(`Failed to create withdrawal request: ${error.message}`);
-        }
-
-        return this.mapDbRowToWithdrawal(data);
-      } catch (e) {
-        if (e instanceof BadRequestException) throw e;
-        throw new BadRequestException(`Failed to process withdrawal request: ${(e as Error).message}`);
-      }
-    }
-
-    // In-memory fallback
-    const newRequest: Withdrawal = {
-      id: `WDR${Date.now().toString().slice(-6)}`,
-      creatorId,
+    const result = await this.withdrawalRpc.requestCreatorWithdrawal({
+      creatorUserId: creatorId,
       amount,
-      status: 'pending',
+      idempotencyKey,
       bankAccountName: bankDetails?.accountName,
       bankAccountNumber: bankDetails?.accountNumber,
       bankIfsc: bankDetails?.ifsc,
       upiId,
-      requestedAt: new Date().toISOString(),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+    });
 
-    this.memWithdrawals.push(newRequest);
-    return newRequest;
+    return this.getWithdrawalById(result.withdrawalId).then((w) => ({
+      ...w,
+      idempotentReplay: result.idempotentReplay,
+    }));
   }
 
-  /**
-   * GET /api/admin/withdrawals
-   * Lists payout requests with optional status filtering
-   */
+  async cancelWithdrawal(
+    withdrawalId: string,
+    creatorUserId: string,
+    idempotencyKey: string | undefined,
+    reason?: string,
+  ) {
+    if (!idempotencyKey?.trim()) {
+      throw new BadRequestException('Idempotency-Key header is required');
+    }
+
+    const existing = await this.getWithdrawalById(withdrawalId);
+    if (existing.creatorId !== creatorUserId) {
+      throw new BadRequestException('You can only cancel your own withdrawal requests');
+    }
+
+    const result = await this.withdrawalRpc.cancelCreatorWithdrawal({
+      withdrawalId,
+      actorId: creatorUserId,
+      actorType: 'creator',
+      reason,
+      idempotencyKey,
+    });
+
+    const withdrawal = await this.getWithdrawalById(withdrawalId);
+    return { ...withdrawal, idempotentReplay: result.idempotentReplay, wallet: result.wallet };
+  }
+
   async getAdminWithdrawals(status?: string): Promise<Withdrawal[]> {
-    if (this.supabase.isConfigured) {
-      try {
-        let query = this.supabase.getClient().from('withdrawals').select('*');
-        if (status) {
-          query = query.eq('status', status);
-        }
-        const { data, error } = await query.order('created_at', { ascending: false });
-
-        if (!error && data) {
-          return data.map(row => this.mapDbRowToWithdrawal(row));
-        }
-        console.warn('WithdrawalsService.getAdminWithdrawals Supabase error:', error?.message);
-      } catch (e) {
-        console.warn('WithdrawalsService.getAdminWithdrawals exception:', (e as Error).message);
-      }
-    }
-
-    let results = this.memWithdrawals;
-    if (status) {
-      results = results.filter(w => w.status === status);
-    }
-    return results.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    const result = await this.getAdminWithdrawalsPaginated({ status, limit: 50 });
+    return result.items;
   }
 
-  /**
-   * GET /api/admin/withdrawals/:id
-   */
-  async getWithdrawalById(id: string): Promise<Withdrawal> {
-    if (this.supabase.isConfigured) {
-      try {
-        const { data, error } = await this.supabase
-          .getClient()
-          .from('withdrawals')
-          .select('*')
-          .eq('id', id)
-          .maybeSingle();
+  async getAdminWithdrawalsPaginated(query: AdminWithdrawalListQueryDto) {
+    if (!this.supabase.isConfigured) {
+      throw new BadRequestException('Withdrawals require Supabase');
+    }
 
-        if (!error && data) {
-          return this.mapDbRowToWithdrawal(data);
-        }
-      } catch (e) {
-        console.warn('WithdrawalsService.getWithdrawalById exception:', (e as Error).message);
+    const limit = clampLimit(query.limit);
+    let dbQuery = this.supabase.getClient().from('withdrawals').select('*');
+
+    if (query.status) dbQuery = dbQuery.eq('status', query.status);
+    if (query.creatorId) dbQuery = dbQuery.eq('creator_id', query.creatorId);
+    if (query.from) dbQuery = dbQuery.gte('created_at', `${query.from}T00:00:00.000Z`);
+    if (query.to) dbQuery = dbQuery.lte('created_at', `${query.to}T23:59:59.999Z`);
+    if (query.minAmount != null) dbQuery = dbQuery.gte('amount', query.minAmount);
+    if (query.maxAmount != null) dbQuery = dbQuery.lte('amount', query.maxAmount);
+
+    if (query.search?.trim()) {
+      const term = query.search.trim().replace(/[%_,.()\\]/g, '');
+      if (term) {
+        dbQuery = dbQuery.or(
+          `id.ilike.%${term}%,creator_id.ilike.%${term}%,payment_reference.ilike.%${term}%`,
+        );
       }
     }
 
-    const request = this.memWithdrawals.find(w => w.id === id);
-    if (!request) {
+    if (query.cursor) {
+      const { t, id } = decodeCursor(query.cursor);
+      dbQuery = dbQuery.or(`created_at.lt.${t},and(created_at.eq.${t},id.lt.${id})`);
+    }
+
+    dbQuery = dbQuery.order('created_at', { ascending: false }).order('id', { ascending: false }).limit(limit + 1);
+
+    const { data, error } = await dbQuery;
+    if (error) {
+      throw new BadRequestException(`Failed to list withdrawals: ${error.message}`);
+    }
+
+    const rows = data ?? [];
+
+    const hasMore = rows.length > limit;
+    const slice = hasMore ? rows.slice(0, limit) : rows;
+    const last = slice[slice.length - 1];
+
+    return {
+      items: slice.map((row) => this.mapDbRowToWithdrawal(row)),
+      hasMore,
+      nextCursor:
+        hasMore && last
+          ? encodeCursor(String(last.created_at), String(last.id))
+          : null,
+    };
+  }
+
+  async exportAdminWithdrawalsCsv(query: AdminWithdrawalListQueryDto): Promise<string> {
+    const allItems: Withdrawal[] = [];
+    let cursor: string | undefined;
+    const pageSize = 50;
+
+    while (allItems.length < MAX_WITHDRAWAL_EXPORT_ROWS) {
+      const page = await this.getAdminWithdrawalsPaginated({
+        ...query,
+        limit: pageSize,
+        cursor,
+      });
+      allItems.push(...page.items);
+      if (!page.hasMore || !page.nextCursor) break;
+      cursor = page.nextCursor;
+    }
+
+    const header = 'id,creator_id,amount,status,requested_at,paid_at,payment_reference';
+    const rows = allItems.map((w) =>
+      [
+        csvCell(w.id),
+        csvCell(w.creatorId),
+        w.amount,
+        csvCell(w.status),
+        csvCell(w.requestedAt),
+        csvCell(w.paidAt ?? ''),
+        csvCell(w.paymentReference ?? ''),
+      ].join(','),
+    );
+    return [header, ...rows].join('\n');
+  }
+
+  async getWithdrawalById(id: string): Promise<Withdrawal> {
+    if (!this.supabase.isConfigured) {
+      throw new BadRequestException('Withdrawals require Supabase');
+    }
+
+    const { data, error } = await this.supabase
+      .getClient()
+      .from('withdrawals')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (error || !data) {
       throw new NotFoundException(`Withdrawal request with ID ${id} not found`);
     }
-    return request;
+    return this.mapDbRowToWithdrawal(data);
   }
 
-  /**
-   * POST /api/admin/withdrawals/:id/approve
-   * Changes status pending -> approved
-   */
-  async approveWithdrawal(id: string): Promise<Withdrawal> {
-    const request = await this.getWithdrawalById(id);
-    if (request.status !== 'pending') {
-      throw new BadRequestException(`Cannot approve request. Status is currently: ${request.status}`);
+  async approveWithdrawal(id: string, adminId: string, idempotencyKey?: string) {
+    if (!idempotencyKey?.trim()) {
+      throw new BadRequestException('Idempotency-Key header is required');
     }
-
-    if (this.supabase.isConfigured) {
-      try {
-        const { data, error } = await this.supabase
-          .getClient()
-          .from('withdrawals')
-          .update({
-            status: 'approved',
-            approved_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', id)
-          .select()
-          .single();
-
-        if (error) {
-          throw new BadRequestException(`Failed to approve request: ${error.message}`);
-        }
-        return this.mapDbRowToWithdrawal(data);
-      } catch (e) {
-        if (e instanceof BadRequestException) throw e;
-        throw new BadRequestException(`Failed to process approval: ${(e as Error).message}`);
-      }
-    }
-
-    // In-memory fallback
-    request.status = 'approved';
-    request.approvedAt = new Date().toISOString();
-    request.updatedAt = new Date().toISOString();
-    return request;
+    const result = await this.withdrawalRpc.approveCreatorWithdrawal({
+      withdrawalId: id,
+      adminId,
+      idempotencyKey,
+    });
+    const withdrawal = await this.getWithdrawalById(id);
+    return { ...withdrawal, idempotentReplay: result.idempotentReplay, wallet: result.wallet };
   }
 
-  /**
-   * POST /api/admin/withdrawals/:id/reject
-   * Changes status pending -> rejected
-   */
-  async rejectWithdrawal(id: string, reason: string): Promise<Withdrawal> {
-    const request = await this.getWithdrawalById(id);
-    if (request.status !== 'pending') {
-      throw new BadRequestException(`Cannot reject request. Status is currently: ${request.status}`);
+  async rejectWithdrawal(
+    id: string,
+    reason: string,
+    adminId: string,
+    idempotencyKey?: string,
+  ) {
+    if (!idempotencyKey?.trim()) {
+      throw new BadRequestException('Idempotency-Key header is required');
     }
-
-    if (this.supabase.isConfigured) {
-      try {
-        const { data, error } = await this.supabase
-          .getClient()
-          .from('withdrawals')
-          .update({
-            status: 'rejected',
-            admin_notes: reason,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', id)
-          .select()
-          .single();
-
-        if (error) {
-          throw new BadRequestException(`Failed to reject request: ${error.message}`);
-        }
-        return this.mapDbRowToWithdrawal(data);
-      } catch (e) {
-        if (e instanceof BadRequestException) throw e;
-        throw new BadRequestException(`Failed to process rejection: ${(e as Error).message}`);
-      }
-    }
-
-    // In-memory fallback
-    request.status = 'rejected';
-    request.adminNotes = reason;
-    request.updatedAt = new Date().toISOString();
-    return request;
+    const result = await this.withdrawalRpc.rejectCreatorWithdrawal({
+      withdrawalId: id,
+      adminId,
+      reason,
+      idempotencyKey,
+    });
+    const withdrawal = await this.getWithdrawalById(id);
+    return { ...withdrawal, idempotentReplay: result.idempotentReplay, wallet: result.wallet };
   }
 
-  /**
-   * POST /api/admin/withdrawals/:id/mark-paid
-   * Changes status approved -> paid
-   * Deducts available balance & logs transaction ledger
-   */
-  async markWithdrawalPaid(id: string, referenceNumber: string, notes?: string): Promise<Withdrawal> {
-    const request = await this.getWithdrawalById(id);
-    if (request.status !== 'approved') {
-      throw new BadRequestException(`Cannot mark request as paid. Status must be "approved" (current: ${request.status})`);
+  async markWithdrawalPaid(
+    id: string,
+    referenceNumber: string,
+    adminId: string,
+    idempotencyKey?: string,
+    notes?: string,
+  ) {
+    if (!idempotencyKey?.trim()) {
+      throw new BadRequestException('Idempotency-Key header is required for settlement');
     }
-
-    const wallet = await this.creatorsService.getWalletBalance(request.creatorId);
-    if (request.amount > wallet.availableBalance) {
-      throw new BadRequestException(`Deduction failed: Withdrawal amount ₹${request.amount} exceeds creator's available balance ₹${wallet.availableBalance}`);
-    }
-
-    const balanceBefore = wallet.availableBalance;
-    const balanceAfter = wallet.availableBalance - request.amount;
-
-    if (this.supabase.isConfigured) {
-      try {
-        const client = this.supabase.getClient();
-        const creatorProfileId = await this.getCreatorProfileId(request.creatorId, client);
-
-        // 1. Deduct wallet available_balance and increase withdrawn_amount
-        const { data: currentWallet, error: fetchErr } = await client
-          .from('creator_wallets')
-          .select('id, available_balance, withdrawn_amount')
-          .eq('creator_id', creatorProfileId)
-          .maybeSingle();
-
-        if (fetchErr || !currentWallet) {
-          throw new BadRequestException(`Creator wallet not found for profile ID ${creatorProfileId}`);
-        }
-
-        const newAvailable = Number(currentWallet.available_balance) - request.amount;
-        const newWithdrawn = Number(currentWallet.withdrawn_amount) + request.amount;
-
-        const { error: walletUpdateErr } = await client
-          .from('creator_wallets')
-          .update({
-            available_balance: newAvailable,
-            withdrawn_amount: newWithdrawn,
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', currentWallet.id);
-
-        if (walletUpdateErr) {
-          throw new BadRequestException(`Failed to update creator wallet: ${walletUpdateErr.message}`);
-        }
-
-        // 2. Create transaction ledger entry
-        const { error: ledgerErr } = await client
-          .from('creator_transactions')
-          .insert({
-            creator_id: request.creatorId, // references public.users(id)
-            type: 'withdrawal',
-            amount: request.amount,
-            balance_before: balanceBefore,
-            balance_after: balanceAfter,
-            reference_id: request.id,
-          });
-
-        if (ledgerErr) {
-          console.warn('Failed to insert creator_transaction ledger record:', ledgerErr.message);
-        }
-
-        // 3. Update withdrawal request status
-        const { data: updatedWithdrawal, error: updateErr } = await client
-          .from('withdrawals')
-          .update({
-            status: 'paid',
-            payment_reference: referenceNumber,
-            admin_notes: notes || request.adminNotes || null,
-            paid_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', id)
-          .select()
-          .single();
-
-        if (updateErr) {
-          throw new BadRequestException(`Failed to update withdrawal record: ${updateErr.message}`);
-        }
-
-        return this.mapDbRowToWithdrawal(updatedWithdrawal);
-      } catch (e) {
-        if (e instanceof BadRequestException) throw e;
-        throw new BadRequestException(`Failed to process mark paid: ${(e as Error).message}`);
-      }
-    }
-
-    // In-memory fallback
-    this.creatorsService.updateWalletBalanceInMemory(request.creatorId, -request.amount, request.amount);
-
-    const ledgerTx: CreatorTransaction = {
-      id: `TXN${Date.now().toString().slice(-6)}`,
-      creatorId: request.creatorId,
-      type: 'withdrawal',
-      amount: request.amount,
-      balanceBefore,
-      balanceAfter,
-      referenceId: request.id,
-      createdAt: new Date().toISOString(),
-    };
-    this.memTransactions.unshift(ledgerTx);
-
-    request.status = 'paid';
-    request.paymentReference = referenceNumber;
-    if (notes) request.adminNotes = notes;
-    request.paidAt = new Date().toISOString();
-    request.updatedAt = new Date().toISOString();
-
-    return request;
+    const result = await this.withdrawalRpc.settleCreatorWithdrawal({
+      withdrawalId: id,
+      adminId,
+      paymentReference: referenceNumber,
+      idempotencyKey,
+      adminNotes: notes,
+    });
+    const withdrawal = await this.getWithdrawalById(id);
+    return { ...withdrawal, idempotentReplay: result.idempotentReplay, wallet: result.wallet };
   }
 
-  /**
-   * Helper to map DB row object keys to CamelCase Withdrawal interface keys
-   */
-  private mapDbRowToWithdrawal(row: any): Withdrawal {
-    return {
-      id: row.id,
-      creatorId: row.creator_id,
-      amount: Number(row.amount),
-      status: row.status,
-      bankAccountName: row.bank_account_name || undefined,
-      bankAccountNumber: row.bank_account_number || undefined,
-      bankIfsc: row.bank_ifsc || undefined,
-      upiId: row.upi_id || undefined,
-      adminNotes: row.admin_notes || undefined,
-      paymentReference: row.payment_reference || undefined,
-      requestedAt: row.requested_at,
-      approvedAt: row.approved_at || undefined,
-      paidAt: row.paid_at || undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
+  async failWithdrawal(
+    id: string,
+    reason: string,
+    adminId: string,
+    idempotencyKey?: string,
+  ) {
+    if (!idempotencyKey?.trim()) {
+      throw new BadRequestException('Idempotency-Key header is required');
+    }
+    const result = await this.withdrawalRpc.failCreatorWithdrawal({
+      withdrawalId: id,
+      actorId: adminId,
+      actorType: 'admin',
+      reason,
+      idempotencyKey,
+    });
+    const withdrawal = await this.getWithdrawalById(id);
+    return { ...withdrawal, idempotentReplay: result.idempotentReplay, wallet: result.wallet };
   }
 
+  async adminCancelWithdrawal(
+    id: string,
+    adminId: string,
+    reason: string,
+    idempotencyKey?: string,
+  ) {
+    if (!idempotencyKey?.trim()) {
+      throw new BadRequestException('Idempotency-Key header is required');
+    }
+    const result = await this.withdrawalRpc.cancelCreatorWithdrawal({
+      withdrawalId: id,
+      actorId: adminId,
+      actorType: 'admin',
+      reason,
+      idempotencyKey,
+    });
+    const withdrawal = await this.getWithdrawalById(id);
+    return { ...withdrawal, idempotentReplay: result.idempotentReplay, wallet: result.wallet };
+  }
+
+  /** @deprecated In-memory fallback removed — finance dashboard uses empty list when Supabase unavailable */
   getMemWithdrawals(): Withdrawal[] {
-    return this.memWithdrawals;
+    return [];
+  }
+
+  private mapDbRowToWithdrawal(row: Record<string, unknown>): Withdrawal {
+    return {
+      id: row.id as string,
+      creatorId: row.creator_id as string,
+      amount: Number(row.amount),
+      status: row.status as WithdrawalStatus,
+      bankAccountName: (row.bank_account_name as string) || undefined,
+      bankAccountNumber: (row.bank_account_number as string) || undefined,
+      bankIfsc: (row.bank_ifsc as string) || undefined,
+      upiId: (row.upi_id as string) || undefined,
+      adminNotes: (row.admin_notes as string) || undefined,
+      paymentReference: (row.payment_reference as string) || undefined,
+      failureReason: (row.failure_reason as string) || undefined,
+      cancellationReason: (row.cancellation_reason as string) || undefined,
+      requestedAt: row.requested_at as string,
+      approvedAt: (row.approved_at as string) || undefined,
+      paidAt: (row.paid_at as string) || undefined,
+      rejectedAt: (row.rejected_at as string) || undefined,
+      failedAt: (row.failed_at as string) || undefined,
+      cancelledAt: (row.cancelled_at as string) || undefined,
+      createdAt: row.created_at as string,
+      updatedAt: row.updated_at as string,
+    };
   }
 }

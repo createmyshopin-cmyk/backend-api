@@ -1,40 +1,49 @@
 import 'dotenv/config';
-import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
-import { RequestMethod, ValidationPipe } from '@nestjs/common';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import { runStartupValidation, getPlatformConfig } from './startup';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  await runStartupValidation({
+    service: 'admin-backend',
+    skipProbes: process.env.SKIP_STARTUP_PROBES === 'true',
+  });
 
-  const isProd = process.env.NODE_ENV === 'production';
-  const corsOrigins = process.env.CORS_ORIGINS?.split(',').map((o) => o.trim()).filter(Boolean);
+  const { NestFactory } = await import('@nestjs/core');
+  const { AppModule } = await import('./app.module');
+  const { RequestMethod, ValidationPipe } = await import('@nestjs/common');
+  const { DocumentBuilder, SwaggerModule } = await import('@nestjs/swagger');
+
+  const platform = getPlatformConfig();
+  const app = await NestFactory.create(AppModule, { rawBody: true });
+
   app.enableCors(
-    isProd && corsOrigins?.length
-      ? { origin: corsOrigins, credentials: true }
-      : undefined,
+    platform.tier === 'production' && platform.corsOrigins.length
+      ? { origin: platform.corsOrigins, credentials: true }
+      : platform.corsOrigins.length
+        ? { origin: platform.corsOrigins, credentials: true }
+        : undefined,
   );
 
-  // Prefix API routes; keep root health probes outside /api for load balancers.
   app.setGlobalPrefix('api', {
     exclude: [
       { path: '', method: RequestMethod.GET },
       { path: 'health', method: RequestMethod.GET },
+      { path: 'health/ready', method: RequestMethod.GET },
+      { path: 'health/startup', method: RequestMethod.GET },
     ],
   });
 
-  // Configure validation globally
   app.useGlobalPipes(new ValidationPipe({ transform: true, whitelist: true }));
 
-  // Swagger Documentation Setup
-  const config = new DocumentBuilder()
-    .setTitle('Coin Calling App API')
-    .setDescription('The API backend documentation for Coin Calling voice/video platform')
-    .setVersion('1.0')
-    .addBearerAuth()
-    .build();
-  
-  if (!isProd || process.env.ENABLE_SWAGGER === 'true') {
+  const swaggerEnabled =
+    platform.tier !== 'production' || platform.enableSwagger;
+
+  if (swaggerEnabled) {
+    const config = new DocumentBuilder()
+      .setTitle('Coin Calling App API')
+      .setDescription('The API backend documentation for Coin Calling voice/video platform')
+      .setVersion('1.0')
+      .addBearerAuth()
+      .build();
     const document = SwaggerModule.createDocument(app, config);
     SwaggerModule.setup('docs', app, document);
   }
@@ -43,8 +52,19 @@ async function bootstrap() {
   await app.listen(port, '0.0.0.0');
   console.log(`Application is running on: http://0.0.0.0:${port}/api`);
   console.log(`Health check available at: http://0.0.0.0:${port}/health`);
-  if (!isProd || process.env.ENABLE_SWAGGER === 'true') {
+  console.log(`Readiness probe at: http://0.0.0.0:${port}/health/ready`);
+  console.log(`Startup probe at: http://0.0.0.0:${port}/health/startup`);
+  if (swaggerEnabled) {
     console.log(`Swagger documentation available at: http://0.0.0.0:${port}/docs`);
   }
 }
-bootstrap();
+
+bootstrap().catch((err) => {
+  console.error(
+    JSON.stringify({
+      event: 'bootstrap_failed',
+      message: err instanceof Error ? err.message : String(err),
+    }),
+  );
+  process.exit(1);
+});

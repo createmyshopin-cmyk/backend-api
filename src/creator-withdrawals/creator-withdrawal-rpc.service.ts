@@ -1,25 +1,8 @@
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
+import { assertFinancialPersistence } from '../startup/financial-guard';
+import type { WithdrawalRpcResult, WalletSnapshot } from '../withdrawals/withdrawal-rpc.service';
 import { mapWithdrawalRpcError } from './withdrawal-error.util';
-
-export interface WalletSnapshot {
-  available: number;
-  locked: number;
-  withdrawn: number;
-  totalEarned: number;
-}
-
-export interface WithdrawalRpcResult {
-  withdrawalId: string;
-  status: string;
-  amount?: number;
-  creatorProfileId?: string;
-  creatorUserId?: string;
-  ledgerEntryId?: string;
-  paymentReference?: string;
-  wallet?: WalletSnapshot;
-  idempotentReplay: boolean;
-}
 
 function mapWallet(raw?: Record<string, unknown>): WalletSnapshot | undefined {
   if (!raw) return undefined;
@@ -52,7 +35,7 @@ export class CreatorWithdrawalRpcService {
 
   private client() {
     if (!this.supabase.isConfigured) {
-      throw new InternalServerErrorException('Supabase is required for creator withdrawals');
+      assertFinancialPersistence('CreatorWithdrawalRpcService');
     }
     return this.supabase.getClient();
   }

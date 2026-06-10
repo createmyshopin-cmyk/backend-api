@@ -1,60 +1,75 @@
-import { Controller, Get, Query, UseGuards, Res } from '@nestjs/common';
-import { Response } from 'express';
+import { Controller, Get, Query, UseGuards, Res, Request, Req } from '@nestjs/common';
+import { Response, Request as ExpressRequest } from 'express';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiResponse } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth/auth.guard';
 import { AdminGuard } from '../../auth/admin.guard';
+import { RolesGuard } from '../../auth/roles.guard';
+import { Roles } from '../../auth/roles.decorator';
 import { FinanceService } from './finance.service';
 import { ChartQueryDto, DateRangeQueryDto } from './dto/finance.dto';
+import { AdminAuditService } from '../admin-audit.service';
+import type { AdminRequestUser } from '../../auth/admin-user.types';
 
 @ApiTags('Admin Finance')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, AdminGuard)
+@UseGuards(JwtAuthGuard, AdminGuard, RolesGuard)
 @Controller('admin/finance')
 export class FinanceController {
-  constructor(private readonly financeService: FinanceService) {}
+  constructor(
+    private readonly financeService: FinanceService,
+    private readonly audit: AdminAuditService,
+  ) {}
 
   @Get('overview')
-  @ApiOperation({ summary: 'Get finance dashboard overview metrics' })
-  @ApiResponse({ status: 200, description: 'Overview statistics returned successfully.' })
+  @Roles('super_admin', 'finance_admin', 'operations_admin')
   async getOverview() {
     return this.financeService.getOverview();
   }
 
   @Get('revenue-chart')
-  @ApiOperation({ summary: 'Get chart data points for revenue and transactions' })
-  @ApiResponse({ status: 200, description: 'Chart points returned successfully.' })
+  @Roles('super_admin', 'finance_admin', 'operations_admin')
   async getRevenueChart(@Query() query: ChartQueryDto) {
     const days = query.days ? Number(query.days) : 7;
     return this.financeService.getRevenueChart(days);
   }
 
   @Get('top-creators')
-  @ApiOperation({ summary: 'Get list of top 10 creators by revenue' })
-  @ApiResponse({ status: 200, description: 'Top creators list returned successfully.' })
+  @Roles('super_admin', 'finance_admin', 'operations_admin')
   async getTopCreators() {
     return this.financeService.getTopCreators();
   }
 
   @Get('call-analytics')
-  @ApiOperation({ summary: 'Get phone call metrics and call coin analytics' })
-  @ApiResponse({ status: 200, description: 'Call analytics returned successfully.' })
+  @Roles('super_admin', 'finance_admin', 'fraud_admin', 'operations_admin')
   async getCallAnalytics() {
     return this.financeService.getCallAnalytics();
   }
 
   @Get('withdrawal-analytics')
-  @ApiOperation({ summary: 'Get withdrawal request transaction statistics' })
-  @ApiResponse({ status: 200, description: 'Withdrawal analytics returned successfully.' })
+  @Roles('super_admin', 'finance_admin')
   async getWithdrawalAnalytics() {
     return this.financeService.getWithdrawalAnalytics();
   }
 
   @Get('export/revenue')
-  @ApiOperation({ summary: 'Export payments revenue report as CSV file' })
+  @Roles('super_admin', 'finance_admin')
   async exportRevenue(
+    @Request() req: { user: AdminRequestUser },
+    @Req() expressReq: ExpressRequest,
     @Query() query: DateRangeQueryDto,
     @Res() res: Response,
   ) {
+    await this.audit.record({
+      ...this.audit.actorFromRequest(req.user, expressReq),
+      action: 'finance_export_revenue',
+      category: 'export',
+      outcome: 'success',
+      resourceType: 'export',
+      resourceId: `revenue-${query.range ?? 'all'}`,
+      retentionClass: 'financial',
+      httpMethod: 'GET',
+      httpPath: '/admin/finance/export/revenue',
+    });
     const csv = await this.financeService.exportRevenueCsv(
       query.range,
       query.startDate,
@@ -66,11 +81,24 @@ export class FinanceController {
   }
 
   @Get('export/earnings')
-  @ApiOperation({ summary: 'Export creator earnings report as CSV file' })
+  @Roles('super_admin', 'finance_admin')
   async exportEarnings(
+    @Request() req: { user: AdminRequestUser },
+    @Req() expressReq: ExpressRequest,
     @Query() query: DateRangeQueryDto,
     @Res() res: Response,
   ) {
+    await this.audit.record({
+      ...this.audit.actorFromRequest(req.user, expressReq),
+      action: 'finance_export_earnings',
+      category: 'export',
+      outcome: 'success',
+      resourceType: 'export',
+      resourceId: `earnings-${query.range ?? 'all'}`,
+      retentionClass: 'financial',
+      httpMethod: 'GET',
+      httpPath: '/admin/finance/export/earnings',
+    });
     const csv = await this.financeService.exportEarningsCsv(
       query.range,
       query.startDate,
@@ -82,11 +110,24 @@ export class FinanceController {
   }
 
   @Get('export/withdrawals')
-  @ApiOperation({ summary: 'Export creator withdrawals report as CSV file' })
+  @Roles('super_admin', 'finance_admin')
   async exportWithdrawals(
+    @Request() req: { user: AdminRequestUser },
+    @Req() expressReq: ExpressRequest,
     @Query() query: DateRangeQueryDto,
     @Res() res: Response,
   ) {
+    await this.audit.record({
+      ...this.audit.actorFromRequest(req.user, expressReq),
+      action: 'finance_export_withdrawals',
+      category: 'export',
+      outcome: 'success',
+      resourceType: 'export',
+      resourceId: `withdrawals-${query.range ?? 'all'}`,
+      retentionClass: 'financial',
+      httpMethod: 'GET',
+      httpPath: '/admin/finance/export/withdrawals',
+    });
     const csv = await this.financeService.exportWithdrawalsCsv(
       query.range,
       query.startDate,

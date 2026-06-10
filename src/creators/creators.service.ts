@@ -1,9 +1,11 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ForbiddenException,
 } from '@nestjs/common';
+import { timed } from '../common/query-timer';
 import { SupabaseService } from '../supabase/supabase.service';
 import { resolveDisplayName } from '../users/users.service';
 import admin from '../auth/firebase-admin';
@@ -13,6 +15,7 @@ export const CREATOR_ONLINE_THRESHOLD_SECONDS = 60;
 
 export interface Creator {
   id: string;
+  creatorProfileId?: string;
   name: string;
   phone: string;
   email: string;
@@ -32,8 +35,12 @@ export interface Creator {
   isNew?: boolean;
 }
 
+const WALLET_SCOPE = 'creators/wallet/balance';
+
 @Injectable()
 export class CreatorsService {
+  private readonly logger = new Logger(CreatorsService.name);
+
   /** In-memory last_seen when Supabase is unavailable (keyed by user id). */
   private readonly lastSeenByUserId = new Map<string, string>();
   private readonly memEarnings: any[] = [];
@@ -134,6 +141,7 @@ export class CreatorsService {
   mapToDto(creator: Creator) {
     return {
       id: creator.id,
+      creatorProfileId: creator.creatorProfileId ?? null,
       name: creator.name,
       language: creator.languages[0] || 'English',
       gender: creator.gender,
@@ -310,6 +318,7 @@ export class CreatorsService {
         status,
         created_at,
         creator_profiles!inner (
+          id,
           bio,
           languages,
           experience,
@@ -352,6 +361,7 @@ export class CreatorsService {
 
       return {
         id: row.id as string,
+        creatorProfileId: (cp?.id as string) ?? undefined,
         name: displayName,
         phone: (row.phone as string) || '',
         email: (row.email as string) || '',
@@ -489,6 +499,7 @@ export class CreatorsService {
       if (cp) return this.mapUserProfileRow(row, cp);
     }
 
+    // Fallback: profile row exists (heartbeat/online work) but users join returned empty.
     const { data: profileRow, error: profileErr } = await client
       .from('creator_profiles')
       .select(`
@@ -863,37 +874,49 @@ export class CreatorsService {
   }
 
   async getWalletBalance(creatorId: string) {
+    const requestStart = performance.now();
+
     if (this.supabase.isConfigured) {
       try {
-        let creatorProfileId = creatorId;
-        const { data: profile } = await this.supabase.getClient()
-          .from('creator_profiles')
-          .select('id')
-          .eq('user_id', creatorId)
-          .maybeSingle();
+        const client = this.supabase.getClient();
 
-        if (profile) {
-          creatorProfileId = profile.id;
-        }
+        // Single round-trip: join creator_profiles → creator_wallets by profile id
+        const { result: walletResult } = await timed(
+          this.logger,
+          WALLET_SCOPE,
+          'db:creator_wallets.join_profiles_by_user_id',
+          async () =>
+            client
+              .from('creator_wallets')
+              .select(
+                'total_earned, available_balance, locked_balance, withdrawn_amount, updated_at, gift_earnings_total, call_earnings_total, creator_profiles!inner(user_id)',
+              )
+              .eq('creator_profiles.user_id', creatorId)
+              .maybeSingle(),
+        );
 
-        const { data, error } = await this.supabase
-          .getClient()
-          .from('creator_wallets')
-          .select('*')
-          .eq('creator_id', creatorProfileId)
-          .maybeSingle();
+        const { data, error } = walletResult;
 
         if (!error && data) {
+          const totalMs = Math.round(performance.now() - requestStart);
+          this.logger.log(`[${WALLET_SCOPE}] getWalletBalance total=${totalMs}ms queries=1 joins=1`);
           return {
             creatorId,
             totalEarned: Number(data.total_earned),
             availableBalance: Number(data.available_balance),
+            lockedBalance: Number((data as Record<string, unknown>).locked_balance ?? 0),
             withdrawnAmount: Number(data.withdrawn_amount),
             updatedAt: data.updated_at,
           };
         }
+
+        if (error) {
+          this.logger.warn(`[${WALLET_SCOPE}] joined wallet query error: ${error.message}`);
+        }
       } catch (e) {
-        console.warn('CreatorsService.getWalletBalance exception:', (e as Error).message);
+        this.logger.warn(
+          `[${WALLET_SCOPE}] getWalletBalance exception: ${(e as Error).message}`,
+        );
       }
     }
 

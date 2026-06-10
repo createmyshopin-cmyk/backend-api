@@ -3,15 +3,28 @@ import {
   NotFoundException,
   BadRequestException,
   InternalServerErrorException,
-  ConflictException,
-  ForbiddenException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { UsersService } from '../users/users.service';
-import { CoinTransactionsService } from '../calls/coin-transactions.service';
 import { SupabaseService } from '../supabase/supabase.service';
 import { CreatePackageDto, UpdatePackageDto, VerifyPaymentDto } from './dto/payment.dto';
 import * as crypto from 'crypto';
 import { createRazorpayClient, RazorpayInstance } from './razorpay-client';
+import { getPlatformConfig, mockPaymentsAllowed } from '../startup/platform-config';
+import { assertFinancialPersistence } from '../startup/financial-guard';
+import { PaymentRpcService } from './payment-rpc.service';
+import { MissionProgressHook } from '../engagement/mission-progress.hook';
+import type { AdminRequestUser } from '../auth/admin-user.types';
+
+interface RazorpayPaymentEntity {
+  id: string;
+  order_id: string;
+  amount: number;
+  currency: string;
+  status: string;
+  captured?: boolean;
+}
 
 // ── Domain types ──────────────────────────────────────────────────────────────
 
@@ -101,18 +114,20 @@ export class PaymentsService {
   private memPayments: PaymentRecord[]  = [];
 
   constructor(
-    private readonly usersService:      UsersService,
-    private readonly coinTransactions:  CoinTransactionsService,
-    private readonly supabase:          SupabaseService,
+    private readonly usersService: UsersService,
+    private readonly supabase: SupabaseService,
+    private readonly paymentRpc: PaymentRpcService,
+    private readonly missionHook: MissionProgressHook,
   ) {
     this.initRazorpay();
   }
 
   private initRazorpay(): void {
-    const keyId     = process.env.RAZORPAY_KEY_ID     || '';
-    const keySecret = process.env.RAZORPAY_KEY_SECRET || '';
+    const { razorpay } = getPlatformConfig();
+    const keyId = razorpay.keyId ?? '';
+    const keySecret = razorpay.keySecret ?? '';
 
-    if (keyId && keySecret && !keyId.startsWith('rzp_test_mock')) {
+    if (keyId && keySecret) {
       this.razorpay = createRazorpayClient({ key_id: keyId, key_secret: keySecret });
     }
   }
@@ -324,7 +339,10 @@ export class PaymentsService {
           gateway:          'Razorpay',
           gateway_order_id: gatewayOrderId,
           amount:           pkg.price,
+          amount_paise:     amountInPaise,
           coins_added:      totalCoins,
+          coins_to_credit:  totalCoins,
+          currency:         pkg.currency,
           status:           'pending',
         })
         .select('*')
@@ -359,7 +377,7 @@ export class PaymentsService {
         id:       gatewayOrderId,
         amount:   amountInPaise,
         currency: pkg.currency,
-        keyId:    process.env.RAZORPAY_KEY_ID || 'rzp_test_mockKeyId',
+        keyId:    getPlatformConfig().razorpay.keyId ?? '',
         ...gatewayOrderData,
       },
     };
@@ -367,362 +385,301 @@ export class PaymentsService {
 
   // ── Verify payment & credit coins ──────────────────────────────────────────
 
-  async verifyPayment(userId: string, dto: VerifyPaymentDto) {
-    // ── Branch A: Dev-only mock checkout (no Razorpay signature) ─────────────
-    const allowMock =
-      process.env.ALLOW_MOCK_PAYMENTS === 'true' &&
-      process.env.NODE_ENV !== 'production';
+  async verifyPayment(
+    userId: string,
+    dto: VerifyPaymentDto,
+    idempotencyKey?: string,
+  ) {
+    const allowMock = mockPaymentsAllowed();
     if (dto.paymentId && dto.transactionId && !dto.razorpaySignature) {
       if (!allowMock) {
         throw new BadRequestException(
           'Mock payment verification is disabled. Provide Razorpay signature parameters.',
         );
       }
-      return this.completePendingPayment(userId, dto.paymentId, dto.transactionId);
+      const pending = await this.findPaymentById(dto.paymentId);
+      if (!pending || pending.userId !== userId) {
+        throw new NotFoundException(`Payment record ${dto.paymentId} not found`);
+      }
+      return this.verifyPaymentFromGateway({
+        userId,
+        gatewayOrderId: pending.gatewayOrderId,
+        gatewayPaymentId: dto.transactionId,
+        amountPaise: Math.round(pending.amount * 100),
+        idempotencyKey: idempotencyKey ?? `mock:${dto.paymentId}`,
+        skipGatewayFetch: true,
+      });
     }
 
-    // ── Branch B: Full Razorpay signature verification ────────────────────────
     if (!dto.razorpayOrderId || !dto.razorpayPaymentId || !dto.razorpaySignature) {
       throw new BadRequestException(
         'Missing Razorpay verification parameters: razorpayOrderId, razorpayPaymentId, razorpaySignature are required',
       );
     }
 
-    // 1. Cryptographic signature check — MUST happen before any DB write
-    const keySecret = process.env.RAZORPAY_KEY_SECRET || '';
-    if (!keySecret || keySecret === 'mockKeySecret') {
-      // Dev mode: accept any signature
-      console.warn('[PaymentsService] RAZORPAY_KEY_SECRET not set — skipping signature check (dev mode)');
-    } else {
-      const expectedSig = crypto
-        .createHmac('sha256', keySecret)
-        .update(`${dto.razorpayOrderId}|${dto.razorpayPaymentId}`)
-        .digest('hex');
-
-      if (!crypto.timingSafeEqual(Buffer.from(expectedSig), Buffer.from(dto.razorpaySignature))) {
-        throw new BadRequestException('Razorpay payment signature is invalid');
-      }
+    if (!idempotencyKey?.trim()) {
+      throw new BadRequestException('Idempotency-Key header is required for payment verify');
     }
 
-    // 2. Look up the pending payment by gateway_order_id
-    if (this.supabase.isConfigured) {
-      return this.verifyPaymentInDb(
-        userId,
-        dto.razorpayOrderId,
-        dto.razorpayPaymentId,
+    this.assertValidCheckoutSignature(dto.razorpayOrderId, dto.razorpayPaymentId, dto.razorpaySignature);
+
+    const pending = await this.findPendingPaymentByOrderId(dto.razorpayOrderId);
+    if (!pending || pending.userId !== userId) {
+      throw new NotFoundException(`No payment record found for order ${dto.razorpayOrderId}`);
+    }
+
+    const amountPaise =
+      pending.amountPaise ?? Math.round(pending.amount * 100);
+
+    const gatewayEntity = await this.fetchGatewayPayment(dto.razorpayPaymentId);
+    this.validateGatewayEntity(gatewayEntity, dto.razorpayOrderId, amountPaise);
+
+    return this.verifyPaymentFromGateway({
+      userId,
+      gatewayOrderId: dto.razorpayOrderId,
+      gatewayPaymentId: dto.razorpayPaymentId,
+      amountPaise,
+      idempotencyKey,
+      gatewayEntity,
+    });
+  }
+
+  async verifyPaymentFromGateway(params: {
+    userId: string;
+    gatewayOrderId: string;
+    gatewayPaymentId: string;
+    amountPaise: number;
+    idempotencyKey: string;
+    gatewayEntity?: RazorpayPaymentEntity;
+    skipGatewayFetch?: boolean;
+  }) {
+    if (!params.skipGatewayFetch && this.razorpay && params.gatewayEntity) {
+      this.validateGatewayEntity(
+        params.gatewayEntity,
+        params.gatewayOrderId,
+        params.amountPaise,
+      );
+    } else if (!params.skipGatewayFetch && this.razorpay) {
+      const entity = await this.fetchGatewayPayment(params.gatewayPaymentId);
+      this.validateGatewayEntity(entity, params.gatewayOrderId, params.amountPaise);
+    }
+
+    const result = await this.paymentRpc.verifyRazorpayPaymentAtomic({
+      userId: params.userId,
+      gatewayOrderId: params.gatewayOrderId,
+      gatewayPaymentId: params.gatewayPaymentId,
+      idempotencyKey: params.idempotencyKey,
+      amountPaise: params.amountPaise,
+      gatewayStatus: 'captured',
+    });
+
+    if (!result.idempotentReplay) {
+      await this.missionHook.onWalletRecharge(
+        params.userId,
+        String(result.paymentId),
       );
     }
 
-    // 2b. In-memory fallback
-    return this.verifyPaymentInMemory(
-      userId,
-      dto.razorpayOrderId,
-      dto.razorpayPaymentId,
-    );
-  }
-
-  /**
-   * Database-backed verification — atomic status transition.
-   * Uses gateway_payment_id UNIQUE constraint as the final guard against
-   * double-credits: if two concurrent verify calls race, only one INSERT wins.
-   */
-  private async verifyPaymentInDb(
-    userId: string,
-    razorpayOrderId:   string,
-    razorpayPaymentId: string,
-  ) {
-    const client = this.supabase.getClient();
-
-    // 2a. Fetch the payment row
-    const { data: paymentRow, error: fetchErr } = await client
-      .from('payments')
-      .select('*')
-      .eq('gateway_order_id', razorpayOrderId)
-      .single();
-
-    if (fetchErr || !paymentRow) {
-      throw new NotFoundException(`No payment record found for order ${razorpayOrderId}`);
-    }
-
-    if (paymentRow.user_id !== userId) {
-      throw new ForbiddenException('Payment does not belong to the authenticated user');
-    }
-
-    // 2b. Idempotency: already succeeded with same payment ID → return cached result
-    if (
-      paymentRow.status === 'success' &&
-      paymentRow.gateway_payment_id === razorpayPaymentId
-    ) {
-      const user = await this.usersService.findOne(paymentRow.user_id as string);
-      return this.buildSuccessResponse(paymentRow, razorpayPaymentId, user.coins);
-    }
-
-    // 2c. Reject already-processed payments
-    if (paymentRow.status !== 'pending') {
-      throw new ConflictException(
-        `Payment already processed (status: ${paymentRow.status as string})`,
-      );
-    }
-
-    // 2d. Atomically mark as success + store Razorpay payment ID.
-    //     The UNIQUE index on gateway_payment_id prevents a second concurrent
-    //     verify from setting it again — only one UPDATE wins.
-    const { data: updatedRows, error: updateErr } = await client
-      .from('payments')
-      .update({
-        status:             'success',
-        gateway_payment_id: razorpayPaymentId,
-      })
-      .eq('id', paymentRow.id as string)
-      .eq('status', 'pending')
-      .eq('user_id', userId)
-      .select('id');
-
-    if (updateErr) {
-      if ((updateErr as { code?: string }).code === '23505') {
-        throw new ConflictException('Duplicate payment verification detected — coins already credited');
-      }
-      throw new InternalServerErrorException(`Failed to update payment status: ${updateErr.message}`);
-    }
-
-    if (!updatedRows?.length) {
-      throw new ConflictException('Payment already processed by another request');
-    }
-
-    // 2e. Credit coins — done AFTER status update to prevent partial state
-    const coinsAdded = Number(paymentRow.coins_added);
-
-    const user        = await this.usersService.findOne(userId);
-    const balanceBefore = user.coins;
-    const updatedUser = await this.usersService.updateCoins(userId, coinsAdded);
-
-    // 2f. Insert ledger entry
-    await this.coinTransactions.recordRecharge({
-      userId,
-      coinsAdded,
-      balanceBefore,
-      balanceAfter: updatedUser.coins,
-      paymentId:    paymentRow.id as string,
-      gateway:      'Razorpay',
-    });
-
-    return this.buildSuccessResponse(paymentRow, razorpayPaymentId, updatedUser.coins);
-  }
-
-  private async verifyPaymentInMemory(
-    userId: string,
-    gatewayOrderId: string,
-    gatewayPaymentId: string,
-  ) {
-    const payment = this.memPayments.find(p => p.gatewayOrderId === gatewayOrderId);
-    if (!payment) throw new NotFoundException(`No payment record for order ${gatewayOrderId}`);
-    if (payment.userId !== userId) {
-      throw new ForbiddenException('Payment does not belong to the authenticated user');
-    }
-
-    if (payment.status === 'success' && payment.gatewayPaymentId === gatewayPaymentId) {
-      const user = await this.usersService.findOne(payment.userId);
-      return this.buildSuccessResponse(payment, gatewayPaymentId, user.coins);
-    }
-    if (payment.status !== 'pending') {
-      throw new ConflictException(`Payment already processed (status: ${payment.status})`);
-    }
-
-    payment.status           = 'success';
-    payment.gatewayPaymentId = gatewayPaymentId;
-
-    const user        = await this.usersService.findOne(payment.userId);
-    const balanceBefore = user.coins;
-    const updatedUser = await this.usersService.updateCoins(payment.userId, payment.coins);
-
-    await this.coinTransactions.recordRecharge({
-      userId:       payment.userId,
-      coinsAdded:   payment.coins,
-      balanceBefore,
-      balanceAfter: updatedUser.coins,
-      paymentId:    payment.id,
-      gateway:      'Razorpay',
-    });
-
-    return this.buildSuccessResponse(payment, gatewayPaymentId, updatedUser.coins);
-  }
-
-  // ── Complete pending payment (mobile mock / admin) ──────────────────────────
-
-  private async completePendingPayment(
-    userId: string,
-    paymentId: string,
-    transactionId: string,
-  ) {
-    if (this.supabase.isConfigured) {
-      const client = this.supabase.getClient();
-
-      const { data, error } = await client
-        .from('payments')
-        .select('*')
-        .eq('id', paymentId)
-        .single();
-
-      if (error || !data) throw new NotFoundException(`Payment record ${paymentId} not found`);
-      if (data.user_id !== userId) {
-        throw new ForbiddenException('Payment does not belong to the authenticated user');
-      }
-      if (data.status !== 'pending') {
-        throw new BadRequestException(`Payment already processed (status: ${data.status as string})`);
-      }
-
-      const paymentUserId = data.user_id as string;
-      const coinsAdded = Number(data.coins_added);
-
-      const user        = await this.usersService.findOne(paymentUserId);
-      const balanceBefore = user.coins;
-      const updatedUser = await this.usersService.updateCoins(paymentUserId, coinsAdded);
-
-      const { data: updatedRows } = await client
-        .from('payments')
-        .update({ status: 'success', gateway_payment_id: transactionId })
-        .eq('id', paymentId)
-        .eq('status', 'pending')
-        .eq('user_id', userId)
-        .select('id');
-
-      if (!updatedRows?.length) {
-        throw new ConflictException('Payment already processed by another request');
-      }
-
-      await this.coinTransactions.recordRecharge({
-        userId: paymentUserId,
-        coinsAdded,
-        balanceBefore,
-        balanceAfter: updatedUser.coins,
-        paymentId,
-        gateway: (data.gateway as string) ?? 'Razorpay',
-      });
-
-      return this.buildSuccessResponse(data, transactionId, updatedUser.coins);
-    }
-
-    // In-memory path
-    const payment = this.memPayments.find(p => p.id === paymentId);
-    if (!payment) throw new NotFoundException(`Payment record ${paymentId} not found`);
-    if (payment.userId !== userId) {
-      throw new ForbiddenException('Payment does not belong to the authenticated user');
-    }
-    if (payment.status !== 'pending') {
-      throw new BadRequestException(`Payment already processed (status: ${payment.status})`);
-    }
-
-    payment.status           = 'success';
-    payment.gatewayPaymentId = transactionId;
-
-    const user        = await this.usersService.findOne(payment.userId);
-    const balanceBefore = user.coins;
-    const updatedUser = await this.usersService.updateCoins(payment.userId, payment.coins);
-
-    await this.coinTransactions.recordRecharge({
-      userId:       payment.userId,
-      coinsAdded:   payment.coins,
-      balanceBefore,
-      balanceAfter: updatedUser.coins,
-      paymentId:    payment.id,
-      gateway:      payment.gateway,
-    });
-
-    return this.buildSuccessResponse(payment, transactionId, updatedUser.coins);
-  }
-
-  // ── Refund ──────────────────────────────────────────────────────────────────
-
-  async refundPayment(paymentId: string, reason?: string) {
-    let paymentRow: Record<string, unknown>;
-
-    if (this.supabase.isConfigured) {
-      const { data, error } = await this.supabase
-        .getClient()
-        .from('payments')
-        .select('*')
-        .eq('id', paymentId)
-        .single();
-
-      if (error || !data) throw new NotFoundException(`Payment ${paymentId} not found`);
-      if (data.status !== 'success') {
-        throw new BadRequestException('Only successful payments can be refunded');
-      }
-      paymentRow = data;
-    } else {
-      const p = this.memPayments.find(m => m.id === paymentId);
-      if (!p) throw new NotFoundException(`Payment ${paymentId} not found`);
-      if (p.status !== 'success') throw new BadRequestException('Only successful payments can be refunded');
-      paymentRow = {
-        id: p.id, user_id: p.userId, coins_added: p.coins,
-        amount: p.amount, gateway: p.gateway,
-      };
-    }
-
-    const userId        = paymentRow.user_id as string;
-    const coinsToDeduct = Number(paymentRow.coins_added);
-
-    const user        = await this.usersService.findOne(userId);
-    const balanceBefore = user.coins;
-    const updatedUser = await this.usersService.updateCoins(userId, -coinsToDeduct);
-
-    await this.coinTransactions.recordRefund({
-      userId,
-      coinsRefunded: coinsToDeduct,
-      balanceBefore,
-      balanceAfter:  updatedUser.coins,
-      referenceId:   paymentId,
-      reason:        reason ?? `Refund for payment ${paymentId}`,
-    });
-
-    if (this.supabase.isConfigured) {
-      await this.supabase
-        .getClient()
-        .from('payments')
-        .update({ status: 'refunded' })
-        .eq('id', paymentId);
-    } else {
-      const p = this.memPayments.find(m => m.id === paymentId);
-      if (p) p.status = 'refunded';
-    }
+    const newBalance =
+      result.balanceAfter ??
+      (await this.usersService.findOne(params.userId)).coins;
 
     return {
-      message:   'Payment refunded and coins deducted',
-      paymentId,
-      coinsDeducted: coinsToDeduct,
-      newBalance: updatedUser.coins,
-    };
-  }
-
-  // ── Shared response builder ─────────────────────────────────────────────────
-
-  private buildSuccessResponse(
-    payment:           Record<string, unknown> | PaymentRecord,
-    gatewayPaymentId:  string,
-    newBalance:        number,
-  ) {
-    const isRecord = (p: unknown): p is PaymentRecord =>
-      typeof (p as PaymentRecord).userId === 'string';
-
-    const id         = isRecord(payment) ? payment.id               : payment.id as string;
-    const userId     = isRecord(payment) ? payment.userId           : payment.user_id as string;
-    const amount     = isRecord(payment) ? payment.amount           : Number(payment.amount);
-    const coinsAdded = isRecord(payment) ? payment.coins            : Number(payment.coins_added);
-    const gateway    = isRecord(payment) ? payment.gateway          : payment.gateway as string;
-
-    return {
-      message: 'Payment verified and coins credited successfully',
+      message: result.idempotentReplay
+        ? 'Payment verify replayed (idempotent)'
+        : 'Payment verified and coins credited successfully',
+      idempotentReplay: result.idempotentReplay,
       payment: {
-        id,
-        userId,
-        amount,
-        coinsAdded,
-        gateway,
-        gatewayPaymentId,
+        id: result.paymentId,
+        userId: result.userId,
+        coinsAdded: result.coinsAdded,
+        gateway: 'Razorpay',
+        gatewayPaymentId: result.gatewayPaymentId,
         status: 'success',
+        coinTransactionId: result.coinTransactionId,
       },
       newBalance,
     };
+  }
+
+  async refundPayment(
+    paymentId: string,
+    reason: string | undefined,
+    admin: AdminRequestUser,
+    ctx?: { idempotencyKey?: string; ip?: string; userAgent?: string },
+  ) {
+    if (!reason?.trim()) {
+      throw new BadRequestException('Refund reason is required');
+    }
+    if (!ctx?.idempotencyKey?.trim()) {
+      throw new BadRequestException('Idempotency-Key header is required for refunds');
+    }
+
+    const result = await this.paymentRpc.refundPaymentAtomic({
+      paymentId,
+      adminId: admin.id,
+      adminEmail: admin.email,
+      adminRole: admin.role,
+      reason,
+      idempotencyKey: ctx.idempotencyKey,
+      httpPath: `/api/payments/${paymentId}/refund`,
+      ipAddress: ctx?.ip,
+      userAgent: ctx?.userAgent,
+    });
+
+    return {
+      message: result.idempotentReplay
+        ? 'Refund replayed (idempotent)'
+        : 'Payment refunded and coins deducted',
+      idempotentReplay: result.idempotentReplay,
+      paymentId,
+      refundEventId: result.refundEventId,
+      auditLogId: result.auditLogId,
+      coinsDeducted: result.coinsClawedBack,
+      newBalance: result.balanceAfter,
+    };
+  }
+
+  async findPendingPaymentByOrderId(orderId: string): Promise<{
+    id: string;
+    userId: string;
+    gatewayOrderId: string;
+    amount: number;
+    amountPaise?: number;
+    status: string;
+  } | null> {
+    if (!this.supabase.isConfigured) {
+      const p = this.memPayments.find((m) => m.gatewayOrderId === orderId);
+      return p
+        ? {
+            id: p.id,
+            userId: p.userId,
+            gatewayOrderId: p.gatewayOrderId,
+            amount: p.amount,
+            status: p.status,
+          }
+        : null;
+    }
+
+    const { data } = await this.supabase
+      .getClient()
+      .from('payments')
+      .select('id, user_id, gateway_order_id, amount, amount_paise, status')
+      .eq('gateway_order_id', orderId)
+      .maybeSingle();
+
+    if (!data) return null;
+    return {
+      id: data.id as string,
+      userId: data.user_id as string,
+      gatewayOrderId: data.gateway_order_id as string,
+      amount: Number(data.amount),
+      amountPaise: data.amount_paise != null ? Number(data.amount_paise) : undefined,
+      status: data.status as string,
+    };
+  }
+
+  async findPaymentByGatewayPaymentId(gatewayPaymentId: string) {
+    if (!this.supabase.isConfigured) {
+      const p = this.memPayments.find((m) => m.gatewayPaymentId === gatewayPaymentId);
+      return p ? { id: p.id, status: p.status, userId: p.userId } : null;
+    }
+    const { data } = await this.supabase
+      .getClient()
+      .from('payments')
+      .select('id, status, user_id')
+      .eq('gateway_payment_id', gatewayPaymentId)
+      .maybeSingle();
+    if (!data) return null;
+    return {
+      id: data.id as string,
+      status: data.status as string,
+      userId: data.user_id as string,
+    };
+  }
+
+  private async findPaymentById(paymentId: string) {
+    if (!this.supabase.isConfigured) {
+      const p = this.memPayments.find((m) => m.id === paymentId);
+      return p
+        ? {
+            id: p.id,
+            userId: p.userId,
+            gatewayOrderId: p.gatewayOrderId,
+            amount: p.amount,
+            status: p.status,
+          }
+        : null;
+    }
+    const { data } = await this.supabase
+      .getClient()
+      .from('payments')
+      .select('id, user_id, gateway_order_id, amount, amount_paise, status')
+      .eq('id', paymentId)
+      .maybeSingle();
+    if (!data) return null;
+    return {
+      id: data.id as string,
+      userId: data.user_id as string,
+      gatewayOrderId: data.gateway_order_id as string,
+      amount: Number(data.amount),
+      amountPaise: data.amount_paise != null ? Number(data.amount_paise) : undefined,
+      status: data.status as string,
+    };
+  }
+
+  private assertValidCheckoutSignature(
+    orderId: string,
+    paymentId: string,
+    signature: string,
+  ): void {
+    const keySecret = getPlatformConfig().razorpay.keySecret;
+    if (!keySecret) {
+      throw new InternalServerErrorException('Razorpay key secret not configured');
+    }
+    const expectedSig = crypto
+      .createHmac('sha256', keySecret)
+      .update(`${orderId}|${paymentId}`)
+      .digest('hex');
+    if (signature.length !== expectedSig.length) {
+      throw new BadRequestException('Razorpay payment signature is invalid');
+    }
+    if (!crypto.timingSafeEqual(Buffer.from(expectedSig), Buffer.from(signature))) {
+      throw new BadRequestException('Razorpay payment signature is invalid');
+    }
+  }
+
+  private async fetchGatewayPayment(paymentId: string): Promise<RazorpayPaymentEntity> {
+    if (!this.razorpay) {
+      if (mockPaymentsAllowed()) {
+        throw new BadRequestException('Gateway fetch required — configure Razorpay keys');
+      }
+      throw new InternalServerErrorException('Razorpay client not configured');
+    }
+    const entity = (await this.razorpay.payments.fetch(paymentId)) as RazorpayPaymentEntity;
+    return entity;
+  }
+
+  private validateGatewayEntity(
+    entity: RazorpayPaymentEntity,
+    expectedOrderId: string,
+    expectedAmountPaise: number,
+  ): void {
+    if (entity.status !== 'captured') {
+      throw new HttpException('Payment not captured at gateway', HttpStatus.PAYMENT_REQUIRED);
+    }
+    if (entity.order_id !== expectedOrderId) {
+      throw new BadRequestException('Gateway order ID does not match payment record');
+    }
+    if (entity.amount !== expectedAmountPaise) {
+      throw new BadRequestException('Gateway amount does not match expected payment amount');
+    }
+    if (entity.currency !== 'INR') {
+      throw new BadRequestException('Unsupported payment currency');
+    }
+    if (entity.captured === false) {
+      throw new HttpException('Payment not captured at gateway', HttpStatus.PAYMENT_REQUIRED);
+    }
   }
 
   // ── Accessors (used by admin module) ───────────────────────────────────────

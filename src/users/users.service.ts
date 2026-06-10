@@ -4,7 +4,13 @@ import {
   InternalServerErrorException,
   BadRequestException,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { SupabaseService } from '../supabase/supabase.service';
+import {
+  UserWalletService,
+  type WalletSourceType,
+} from '../wallets/user-wallet.service';
+import { assertFinancialPersistence } from '../startup/financial-guard';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { CompleteOnboardingDto } from './dto/complete-onboarding.dto';
 
@@ -145,12 +151,23 @@ const SEED_USERS: User[] = [
   },
 ];
 
+export interface UpdateCoinsOptions {
+  sourceType: WalletSourceType;
+  sourceId: string;
+  idempotencyKey: string;
+  allowPartial?: boolean;
+  adminId?: string;
+}
+
 @Injectable()
 export class UsersService {
   /** Mutable only when Supabase is unconfigured */
   private memUsers: User[] = JSON.parse(JSON.stringify(SEED_USERS));
 
-  constructor(private readonly supabase: SupabaseService) {}
+  constructor(
+    private readonly supabase: SupabaseService,
+    private readonly userWallet: UserWalletService,
+  ) {}
 
   // ─── Read ──────────────────────────────────────────────────────────────────
 
@@ -167,6 +184,40 @@ export class UsersService {
       }
     }
     return status ? this.memUsers.filter((u) => u.status === status) : [...this.memUsers];
+  }
+
+  /** Batch-fetch users by id — avoids N+1 in list enrichment. */
+  async findManyByIds(ids: string[]): Promise<Map<string, User>> {
+    const unique = [...new Set(ids.filter(Boolean))];
+    const map = new Map<string, User>();
+    if (!unique.length) return map;
+
+    if (this.supabase.isConfigured) {
+      try {
+        const { data, error } = await this.supabase
+          .getClient()
+          .from('users')
+          .select(USER_SELECT)
+          .in('id', unique);
+        if (!error && data) {
+          for (const row of data as Record<string, unknown>[]) {
+            const user = rowToUser(row);
+            map.set(user.id, user);
+          }
+        } else if (error) {
+          console.warn('UsersService.findManyByIds Supabase error:', error.message);
+        }
+      } catch (e) {
+        console.warn('UsersService.findManyByIds exception:', (e as Error).message);
+      }
+    }
+
+    for (const id of unique) {
+      if (map.has(id)) continue;
+      const mem = this.memUsers.find((u) => u.id === id);
+      if (mem) map.set(id, mem);
+    }
+    return map;
   }
 
   async findOne(id: string): Promise<User> {
@@ -341,49 +392,37 @@ export class UsersService {
   }
 
   /**
-   * Atomically adjusts a user's coin balance.
-   * @param id   User UUID
-   * @param delta Positive to add, negative to deduct
+   * Atomically adjusts a user's coin balance via adjust_user_coins_v2 RPC.
+   * All wallet mutations must use this path — no direct users/wallets UPDATE.
    */
-  async updateCoins(id: string, delta: number): Promise<User> {
-    if (this.supabase.isConfigured) {
-      try {
-        // Use RPC to do an atomic increment so concurrent calls don't race
-        const { data, error } = await this.supabase
-          .getClient()
-          .rpc('adjust_user_coins', { p_user_id: id, p_delta: delta });
-
-        if (!error) {
-          // rpc returns the new balance
-          const updated = await this.findOne(id);
-          const mem = this.memUsers.find((u) => u.id === id);
-          if (mem) mem.coins = updated.coins;
-          return updated;
-        }
-        // RPC might not exist yet — fall back to read-modify-write
-        console.warn('adjust_user_coins RPC failed, using read-modify-write:', error.message);
-        const user = await this.findOne(id);
-        const newCoins = Math.max(0, user.coins + delta);
-        const { error: upErr } = await this.supabase
-          .getClient()
-          .from('users')
-          .update({ coins: newCoins })
-          .eq('id', id);
-        if (upErr) console.warn('UsersService.updateCoins update error:', upErr.message);
-        user.coins = newCoins;
-        const mem = this.memUsers.find((u) => u.id === id);
-        if (mem) mem.coins = newCoins;
-        return user;
-      } catch (e) {
-        console.warn('UsersService.updateCoins exception:', (e as Error).message);
-      }
+  async updateCoins(id: string, delta: number, options?: UpdateCoinsOptions): Promise<User> {
+    if (!this.supabase.isConfigured) {
+      assertFinancialPersistence('UsersService.updateCoins');
     }
 
-    // In-memory fallback
+    const walletOpts: UpdateCoinsOptions = options ?? {
+      sourceType: 'payment',
+      sourceId: randomUUID(),
+      idempotencyKey: `legacy-update:${id}:${randomUUID()}`,
+      allowPartial: false,
+    };
+
+    const result = await this.userWallet.adjustUserCoinsV2({
+      userId: id,
+      delta,
+      sourceType: walletOpts.sourceType,
+      sourceId: walletOpts.sourceId,
+      idempotencyKey: walletOpts.idempotencyKey,
+      allowPartial: walletOpts.allowPartial ?? false,
+      adminId: walletOpts.adminId,
+    });
+
     const mem = this.memUsers.find((u) => u.id === id);
-    if (!mem) throw new NotFoundException(`User ${id} not found`);
-    mem.coins = Math.max(0, mem.coins + delta);
-    return mem;
+    if (mem) mem.coins = result.balanceAfter;
+
+    const updated = await this.findOne(id);
+    updated.coins = result.balanceAfter;
+    return updated;
   }
 
   async saveFcmToken(userId: string, fcmToken: string): Promise<{ message: string }> {

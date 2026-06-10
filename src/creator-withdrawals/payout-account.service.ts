@@ -59,16 +59,6 @@ export class PayoutAccountService {
     });
 
     if (error) {
-      const msg = error.message ?? '';
-      if (
-        msg.includes('schema cache') ||
-        msg.includes('get_creator_default_payout_account')
-      ) {
-        this.logger.warn(
-          `get_creator_default_payout_account unavailable for ${scope.creatorProfileId}: ${msg}`,
-        );
-        return { schemaVersion: '3.2.0', hasAccount: false, account: null };
-      }
       mapWithdrawalRpcError(error, 'get_creator_default_payout_account');
     }
 

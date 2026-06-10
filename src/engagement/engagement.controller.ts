@@ -14,7 +14,6 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/auth.guard';
-import { AppUserGuard } from '../auth/app-user.guard';
 import {
   ClaimMissionDto,
   CreatorTargetDto,
@@ -30,7 +29,7 @@ interface AuthenticatedRequest {
 
 @ApiTags('Engagement')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, AppUserGuard)
+@UseGuards(JwtAuthGuard)
 @Controller('engagement')
 export class EngagementController {
   private readonly logger = new Logger(EngagementController.name);

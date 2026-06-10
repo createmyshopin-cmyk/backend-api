@@ -80,14 +80,11 @@ describe('CreatorDashboardService', () => {
       expect(repository.getAnalyticsWindow).toHaveBeenCalled();
     });
 
-    it('degrades to zero analytics when window fetch fails', async () => {
+    it('propagates dashboard unavailable', async () => {
       repository.getAnalyticsWindow.mockRejectedValueOnce(
         new ServiceUnavailableException({ code: 'dashboard_unavailable' }),
       );
-      const result = await service.getDashboard(scope);
-      expect(result.wallet.lifetimeEarnings).toBe(1700);
-      expect(result.analytics.today.totalEarnings).toBe(0);
-      expect(result.analytics.chart7Day).toHaveLength(7);
+      await expect(service.getDashboard(scope)).rejects.toBeInstanceOf(ServiceUnavailableException);
     });
   });
 

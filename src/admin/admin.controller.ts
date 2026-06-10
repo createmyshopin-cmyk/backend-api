@@ -1,27 +1,32 @@
-import { Controller, Get, Post, Param, Query, Body, HttpCode, HttpStatus, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Param, Query, Body, HttpCode, HttpStatus, UseGuards, Logger } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { AdminService } from './admin.service';
 import { UpdateSettingsDto, MaintenanceToggleDto } from './dto/admin.dto';
 import { JwtAuthGuard } from '../auth/auth.guard';
 import { AdminGuard } from '../auth/admin.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
+import { ALL_ADMIN_ROLES } from '../auth/admin-roles';
 
 @ApiTags('Admin Configurations')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, AdminGuard)
+@UseGuards(JwtAuthGuard, AdminGuard, RolesGuard)
 @Controller('admin')
 export class AdminController {
+  private readonly logger = new Logger(AdminController.name);
+
   constructor(private readonly adminService: AdminService) {}
 
   @Get('settings')
+  @Roles('super_admin', 'operations_admin')
   @ApiOperation({ summary: 'Get system settings' })
-  @ApiResponse({ status: 200, description: 'Settings details returned.' })
-  @ApiResponse({ status: 403, description: 'Admin access required.' })
   getSettings() {
     return this.adminService.getSettings();
   }
 
   @Post('settings')
   @HttpCode(HttpStatus.OK)
+  @Roles('super_admin', 'operations_admin')
   @ApiOperation({ summary: 'Update system settings' })
   updateSettings(@Body() updateSettingsDto: UpdateSettingsDto) {
     return this.adminService.updateSettings(updateSettingsDto);
@@ -29,41 +34,55 @@ export class AdminController {
 
   @Post('settings/maintenance')
   @HttpCode(HttpStatus.OK)
+  @Roles('super_admin', 'operations_admin')
   @ApiOperation({ summary: 'Toggle system maintenance mode' })
   toggleMaintenance(@Body() dto: MaintenanceToggleDto) {
     return this.adminService.toggleMaintenance(dto);
   }
 
   @Get('list')
+  @Roles('super_admin')
   @ApiOperation({ summary: 'Get administrative accounts list' })
   getAdmins() {
     return this.adminService.getAdmins();
   }
 
   @Get('dashboard')
+  @Roles(...ALL_ADMIN_ROLES)
   @ApiOperation({ summary: 'Get dashboard overview statistics' })
-  @ApiResponse({ status: 200, description: 'Dashboard stats returned.' })
-  getDashboardStats() {
-    return this.adminService.getDashboardStats();
+  async getDashboardStats() {
+    const start = performance.now();
+    try {
+      const result = await this.adminService.getDashboardStats();
+      const ms = Math.round(performance.now() - start);
+      this.logger.log(`GET /admin/dashboard handler completed in ${ms}ms`);
+      return result;
+    } catch (e) {
+      const ms = Math.round(performance.now() - start);
+      this.logger.error(
+        `GET /admin/dashboard failed after ${ms}ms — ${(e as Error).message}`,
+      );
+      throw e;
+    }
   }
 
   @Get('listeners')
+  @Roles('super_admin', 'moderator', 'support_admin', 'fraud_admin', 'operations_admin')
   @ApiOperation({ summary: 'Get listeners filtered by status' })
-  @ApiResponse({ status: 200, description: 'Listeners list returned.' })
   getListeners(@Query('status') status?: string) {
     return this.adminService.getListeners(status);
   }
 
   @Get('listeners/:id')
+  @Roles('super_admin', 'moderator', 'support_admin', 'fraud_admin', 'operations_admin')
   @ApiOperation({ summary: 'Get listener detail' })
-  @ApiResponse({ status: 200, description: 'Listener details returned.' })
   getListenerDetail(@Param('id') id: string) {
     return this.adminService.getListenerDetail(id);
   }
 
   @Get('transactions')
+  @Roles('super_admin', 'finance_admin', 'fraud_admin')
   @ApiOperation({ summary: 'Get coin transactions list' })
-  @ApiResponse({ status: 200, description: 'Transactions list returned.' })
   getTransactions(
     @Query('page') page?: number,
     @Query('limit') limit?: number,
@@ -77,8 +96,8 @@ export class AdminController {
   }
 
   @Get('earnings')
+  @Roles('super_admin', 'finance_admin', 'operations_admin')
   @ApiOperation({ summary: 'Get listener earnings history' })
-  @ApiResponse({ status: 200, description: 'Earnings list returned.' })
   getEarnings() {
     return this.adminService.getEarnings();
   }

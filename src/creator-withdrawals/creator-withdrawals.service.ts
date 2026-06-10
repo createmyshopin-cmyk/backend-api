@@ -145,16 +145,6 @@ export class CreatorWithdrawalsService {
     );
 
     if (error) {
-      const msg = error.message ?? '';
-      if (
-        msg.includes('schema cache') ||
-        msg.includes('get_creator_withdrawal_status_snapshot')
-      ) {
-        this.logger.warn(
-          `get_creator_withdrawal_status_snapshot unavailable for ${scope.creatorProfileId}: ${msg}`,
-        );
-        return this.emptyStatus();
-      }
       mapWithdrawalRpcError(error, 'get_creator_withdrawal_status_snapshot');
     }
 

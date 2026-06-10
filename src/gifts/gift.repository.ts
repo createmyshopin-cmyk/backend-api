@@ -1,6 +1,15 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { SupabaseService } from '../supabase/supabase.service';
 import { CreateGiftDto, UpdateGiftDto } from './dto/gift.dto';
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function assertUuid(value: string, label: string): void {
+  if (!UUID_RE.test(value)) {
+    throw new BadRequestException(`Invalid ${label}`);
+  }
+}
 
 export interface GiftRow {
   id: string;
@@ -41,6 +50,8 @@ export interface SendGiftRpcResult {
   sender_avatar?: string;
   creator_user_id?: string;
   duplicate?: boolean;
+  combo?: Record<string, unknown>;
+  gift?: Record<string, unknown>;
 }
 
 @Injectable()
@@ -65,7 +76,9 @@ export class GiftRepository {
   private mapTransaction(row: Record<string, unknown>): GiftTransactionRow {
     const gifts = row.gifts as Record<string, unknown> | Record<string, unknown>[] | null;
     const gift = Array.isArray(gifts) ? gifts[0] : gifts;
-    const users = row.users as Record<string, unknown> | Record<string, unknown>[] | null;
+    const users =
+      (row.users as Record<string, unknown> | Record<string, unknown>[] | null) ??
+      (row.sender as Record<string, unknown> | Record<string, unknown>[] | null);
     const user = Array.isArray(users) ? users[0] : users;
 
     return {
@@ -207,10 +220,14 @@ export class GiftRepository {
   }
 
   async listSenderHistory(senderUserId: string, limit = 50): Promise<GiftTransactionRow[]> {
+    assertUuid(senderUserId, 'sender user id');
+
     const { data, error } = await this.supabase
       .getClient()
       .from('gift_transactions')
-      .select('*, gifts(name), users(name, full_name)')
+      .select(
+        '*, gifts(name), sender:users!gift_transactions_sender_user_id_fkey(name, full_name)',
+      )
       .eq('sender_user_id', senderUserId)
       .order('created_at', { ascending: false })
       .limit(limit);
@@ -220,10 +237,15 @@ export class GiftRepository {
   }
 
   async listRecentForCreatorProfile(creatorProfileId: string, limit = 20): Promise<GiftTransactionRow[]> {
+    assertUuid(creatorProfileId, 'creator profile id');
+
     const { data, error } = await this.supabase
       .getClient()
       .from('gift_transactions')
-      .select('*, gifts(name), users(name, full_name, avatar_url, profile_image)')
+      .select(
+        `*, gifts(name),
+         sender:users!gift_transactions_sender_user_id_fkey(name, full_name, profile_image)`,
+      )
       .eq('creator_id', creatorProfileId)
       .order('created_at', { ascending: false })
       .limit(limit);

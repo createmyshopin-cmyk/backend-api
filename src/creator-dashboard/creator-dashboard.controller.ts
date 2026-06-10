@@ -1,7 +1,6 @@
 import { Controller, Get, Query, Request, UseGuards, Logger } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/auth.guard';
-import { AppUserGuard } from '../auth/app-user.guard';
 import { CreatorScopeGuard, CreatorAuthenticatedRequest } from './creator-scope.guard';
 import { CreatorDashboardService } from './creator-dashboard.service';
 import {
@@ -12,7 +11,7 @@ import {
 
 @ApiTags('Creator Economy')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard, AppUserGuard, CreatorScopeGuard)
+@UseGuards(JwtAuthGuard, CreatorScopeGuard)
 @Controller('creator')
 export class CreatorDashboardController {
   private readonly logger = new Logger(CreatorDashboardController.name);

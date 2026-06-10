@@ -89,15 +89,8 @@ export class CreatorAnalyticsRpcService {
     );
 
     if (error) {
-      const msg = error.message ?? 'unknown_error';
-      const isSchemaCache =
-        msg.includes('Could not find the function') || msg.includes('schema cache');
-      if (isSchemaCache) {
-        this.logger.warn(`get_creator_analytics_window unavailable (schema): ${msg}`);
-      } else {
-        this.logger.error(`get_creator_analytics_window failed: ${msg}`);
-      }
-      throw new Error(msg);
+      this.logger.error(`get_creator_analytics_window failed: ${error.message}`);
+      throw new Error(error.message);
     }
 
     const row = data as Record<string, unknown>;

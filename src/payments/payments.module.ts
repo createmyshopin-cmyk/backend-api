@@ -3,15 +3,18 @@ import { AuthModule } from '../auth/auth.module';
 import { PaymentsService } from './payments.service';
 import { PaymentsController } from './payments.controller';
 import { CoinPackagesController } from './coin-packages.controller';
+import { PaymentRpcService } from './payment-rpc.service';
+import { RazorpayWebhookService } from './razorpay-webhook.service';
+import { RazorpayWebhookController } from './razorpay-webhook.controller';
 import { UsersModule } from '../users/users.module';
-import { CoinTransactionsModule } from '../coin-transactions/coin-transactions.module';
 import { SupabaseModule } from '../supabase/supabase.module';
+import { EngagementModule } from '../engagement/engagement.module';
 
 @Module({
-  imports: [AuthModule, UsersModule, CoinTransactionsModule, SupabaseModule],
-  controllers: [PaymentsController, CoinPackagesController],
-  providers: [PaymentsService],
-  exports: [PaymentsService],
+  imports: [AuthModule, UsersModule, SupabaseModule, EngagementModule],
+  controllers: [PaymentsController, CoinPackagesController, RazorpayWebhookController],
+  providers: [PaymentsService, PaymentRpcService, RazorpayWebhookService],
+  exports: [PaymentsService, PaymentRpcService],
 })
 export class PaymentsModule {}
 
