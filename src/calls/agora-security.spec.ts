@@ -8,6 +8,15 @@ describe('Agora channel security', () => {
     (service as any).supabase = { isConfigured: false };
     (service as any).memCalls = [];
     (service as any).memCallRequests = [];
+    (service as any).usersService = {
+      findOne: jest.fn().mockImplementation((id: string) =>
+        Promise.resolve({
+          id,
+          name: id,
+          isCreator: id.includes('creator'),
+        }),
+      ),
+    };
   });
 
   it('rejects unknown channel in memory mode', async () => {

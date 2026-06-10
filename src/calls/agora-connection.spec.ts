@@ -14,6 +14,15 @@ describe('Agora connection flow', () => {
     (service as any).supabase = { isConfigured: false };
     (service as any).memCalls = [];
     (service as any).memCallRequests = [];
+    (service as any).usersService = {
+      findOne: jest.fn().mockImplementation((id: string) =>
+        Promise.resolve({
+          id,
+          name: id,
+          isCreator: id.includes('creator'),
+        }),
+      ),
+    };
     process.env = {
       ...originalEnv,
       AGORA_APP_ID: 'test-app-id',
