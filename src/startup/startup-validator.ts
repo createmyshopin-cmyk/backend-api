@@ -13,6 +13,7 @@ import { probeSupabase } from './probes/supabase.probe';
 import { probeFirebase } from './probes/firebase.probe';
 import { probeRazorpay } from './probes/razorpay.probe';
 import { probeAgora } from './probes/agora.probe';
+import { applyDeployEnvDefaults } from './deploy-env';
 
 export type ServiceProfile = 'admin-backend' | 'api-backend';
 
@@ -194,6 +195,9 @@ export async function runStartupValidation(
   options: StartupValidatorOptions = {},
 ): Promise<PlatformConfigShape> {
   const env = options.env ?? process.env;
+  if (!options.env) {
+    applyDeployEnvDefaults(env);
+  }
   const srcRoot = options.srcRoot ?? path.join(__dirname, '..');
   const service = options.service ?? 'admin-backend';
   const dryRun = options.dryRun ?? false;
