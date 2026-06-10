@@ -27,6 +27,10 @@ import {
   computeCallCoins,
   type CallEndSummary,
 } from './call-summary';
+import {
+  assertValidCallRoles,
+  invalidCallRoleException,
+} from './call-role.util';
 
 // ─── Domain model ───────────────────────────────────────────────────────────
 
@@ -158,6 +162,21 @@ export class CallsService {
     private readonly fcmService: FcmService,
     private readonly coinTransactions: CoinTransactionsService,
   ) {}
+
+  /** Enforce User → Creator only (caller.is_creator=false, receiver.is_creator=true). */
+  private async enforceCallRoleInvariant(
+    callerId: string,
+    creatorId: string,
+  ): Promise<void> {
+    if (callerId === creatorId) {
+      throw invalidCallRoleException();
+    }
+    const [caller, receiver] = await Promise.all([
+      this.usersService.findOne(callerId),
+      this.usersService.findOne(creatorId),
+    ]);
+    assertValidCallRoles(caller, receiver);
+  }
 
   private async notifyPeerCallCancelled(
     cancelledByUserId: string,
@@ -337,6 +356,8 @@ export class CallsService {
     if (!session) {
       return { success: true, callSession: null, userId };
     }
+
+    await this.enforceCallRoleInvariant(session.callerId, session.creatorId);
 
     const isCreator = session.creatorId === userId;
     let peerName = isCreator ? session.callerName : session.creatorName;
@@ -668,6 +689,12 @@ export class CallsService {
 
   async requestCall(callerId: string, dto: RequestCallDto) {
     const caller = await this.usersService.findOne(callerId);
+    const receiverUser = await this.usersService.findOne(dto.listenerId);
+    assertValidCallRoles(caller, receiverUser);
+    if (callerId === dto.listenerId) {
+      throw invalidCallRoleException();
+    }
+
     const creator = await this.creatorsService.findOne(dto.listenerId);
 
     if (!creator.isOnline) {
@@ -811,6 +838,12 @@ export class CallsService {
     }
 
     const caller = await this.usersService.findOne(record.callerId);
+    const receiverUser = await this.usersService.findOne(record.creatorId);
+    assertValidCallRoles(caller, receiverUser);
+    if (!receiverUser.isCreator) {
+      throw invalidCallRoleException();
+    }
+
     const creator = await this.creatorsService.findOne(record.creatorId);
 
     if (caller.coins < MIN_COINS_TO_CALL) {
@@ -1170,6 +1203,16 @@ export class CallsService {
     channelName: string,
     callId?: string,
   ): Promise<void> {
+    const finishParticipantCheck = async (
+      callerId: string,
+      creatorId: string,
+    ): Promise<void> => {
+      if (userId !== callerId && userId !== creatorId) {
+        throw new ForbiddenException('You are not a participant in this call');
+      }
+      await this.enforceCallRoleInvariant(callerId, creatorId);
+    };
+
     if (this.supabase.isConfigured) {
       const client = this.supabase.getClient();
 
@@ -1190,8 +1233,8 @@ export class CallsService {
           }
           const callerId = callById.caller_id as string;
           const creatorId = callById.creator_id as string;
-          if (userId === callerId || userId === creatorId) return;
-          throw new ForbiddenException('You are not a participant in this call');
+          await finishParticipantCheck(callerId, creatorId);
+          return;
         }
 
         throw new NotFoundException(`Call session ${callId} not found`);
@@ -1205,8 +1248,11 @@ export class CallsService {
         .maybeSingle();
 
       if (callRow) {
-        if (userId === callRow.caller_id || userId === callRow.creator_id) return;
-        throw new ForbiddenException('You are not a participant in this call channel');
+        await finishParticipantCheck(
+          callRow.caller_id as string,
+          callRow.creator_id as string,
+        );
+        return;
       }
 
       const { data: reqRow } = await client
@@ -1217,8 +1263,11 @@ export class CallsService {
         .maybeSingle();
 
       if (reqRow) {
-        if (userId === reqRow.caller_id || userId === reqRow.creator_id) return;
-        throw new ForbiddenException('You are not a participant in this call channel');
+        await finishParticipantCheck(
+          reqRow.caller_id as string,
+          reqRow.creator_id as string,
+        );
+        return;
       }
 
       throw new ForbiddenException('No active call found for this channel');
@@ -1233,8 +1282,8 @@ export class CallsService {
         if (memById.channelName !== channelName) {
           throw new ForbiddenException('Channel does not match call session');
         }
-        if (memById.callerId === userId || memById.creatorId === userId) return;
-        throw new ForbiddenException('You are not a participant in this call');
+        await finishParticipantCheck(memById.callerId, memById.creatorId);
+        return;
       }
       throw new NotFoundException(`Call session ${callId} not found`);
     }
@@ -1244,14 +1293,16 @@ export class CallsService {
         c.channelName === channelName &&
         ACTIVE_CALL_STATUSES.includes(c.status),
     );
-    if (memCall && (memCall.callerId === userId || memCall.creatorId === userId)) {
+    if (memCall) {
+      await finishParticipantCheck(memCall.callerId, memCall.creatorId);
       return;
     }
 
     const memReq = this.memCallRequests.find(
       (r) => r.channelName === channelName && r.status === 'requested',
     );
-    if (memReq && (memReq.callerId === userId || memReq.creatorId === userId)) {
+    if (memReq) {
+      await finishParticipantCheck(memReq.callerId, memReq.creatorId);
       return;
     }
 
@@ -1303,6 +1354,7 @@ export class CallsService {
     if (session.callerId !== userId && session.creatorId !== userId) {
       throw new ForbiddenException('You do not have access to this call');
     }
+    await this.enforceCallRoleInvariant(session.callerId, session.creatorId);
     if (!ACTIVE_CALL_STATUSES.includes(session.status)) {
       throw new BadRequestException('Call session has already ended');
     }
