@@ -14,6 +14,7 @@ import { AdminUsersModule } from './admin/users/admin-users.module';
 import { GiftModule } from './gifts/gift.module';
 import { CreatorDashboardModule } from './creator-dashboard/creator-dashboard.module';
 import { EngagementModule } from './engagement/engagement.module';
+import { CreatorWithdrawalsModule } from './creator-withdrawals/creator-withdrawals.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -33,6 +34,7 @@ import { HealthController } from './health.controller';
     GiftModule,
     CreatorDashboardModule,
     EngagementModule,
+    CreatorWithdrawalsModule,
   ],
   controllers: [HealthController],
 })
