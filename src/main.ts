@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { runStartupValidation, getPlatformConfig } from './startup';
 import { buildCorsOptions } from './startup/cors-options';
+import { legacyApiPrefixMiddleware } from './legacy-api-prefix.middleware';
 
 async function bootstrap() {
   await runStartupValidation({
@@ -15,6 +16,8 @@ async function bootstrap() {
 
   const platform = getPlatformConfig();
   const app = await NestFactory.create(AppModule, { rawBody: true });
+
+  app.getHttpAdapter().getInstance().use(legacyApiPrefixMiddleware);
 
   app.enableCors(buildCorsOptions(platform.corsOrigins));
 
