@@ -12,6 +12,7 @@ import { AgoraModule } from './agora/agora.module';
 import { FinanceModule } from './admin/finance/finance.module';
 import { AdminUsersModule } from './admin/users/admin-users.module';
 import { GiftModule } from './gifts/gift.module';
+import { CreatorDashboardModule } from './creator-dashboard/creator-dashboard.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -29,6 +30,7 @@ import { HealthController } from './health.controller';
     FinanceModule,
     AdminUsersModule,
     GiftModule,
+    CreatorDashboardModule,
   ],
   controllers: [HealthController],
 })
